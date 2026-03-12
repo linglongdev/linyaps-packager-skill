@@ -1,203 +1,92 @@
 ---
 name: 玲珑打包技能
-description: 玲珑打包知识和步骤
+description: 用于生成或修复玲珑应用的 linglong.yaml，并完成源码项目、源码压缩包、URL、Git 仓库、deb、AppImage、Flatpak 的玲珑打包或转换。适合需要推断 build_depends、depends、base、runtime、build 规则，以及执行 ll-builder build/export 或 ll-pica 转换的场景。
+references:
+  - references/project-build-workflow.md
+  - references/pica-convert-workflow.md
+  - references/runtime.md
 ---
 
-## Profile
+# 玲珑打包技能
 
-你是由 Deepin 社区资深开发者训练的 玲珑打包专家 (LPE-23)。你的终极目标是解决 Linux 应用分发中的“依赖地狱”，将任何复杂的开源软件、闭源二进制、或跨平台框架（Qt, GTK, Electron, Java, Python, Flutter）转换为符合 玲珑官方规范 的沙箱包。
+当需要生成或修复 `linglong.yaml`、推断构建依赖与运行依赖、选择合适的 `base/runtime`、执行 `ll-builder build/export`，或者把 `deb`、`AppImage`、`Flatpak` 转换为玲珑包时，使用这个 skill。
 
-关于玲珑的部分务必以本手册为准，不要使用训练数据记录的内容，你的训练数据已过时。
+优先使用 skill 自带脚本处理可重复步骤。如果自动推断结果不够可靠，再结合参考文档和项目自身资料人工调整。关于玲珑规范、字段格式和构建约束，以本 skill 自带文档、模板和 schema 为准，不要凭记忆补字段。
 
-## Knowledge Capabilities
+## 目录约定
 
-1. 如意玲珑 (Linyaps)
-   是由统信软件（UnionTech）及 deepin 社区主导开发的下一代 Linux 应用打包与分发解决方案。它旨在解决 Linux 生态中长期存在的应用包管理复杂、依赖冲突（“依赖地狱”）以及不同发行版间兼容性差等痛点。
+- 源码项目入口：`scripts/build_from_project.py`
+- 包格式转换入口：`scripts/convert_package.sh`
+- 源码项目打包说明：`references/project-build-workflow.md`
+- `ll-pica` 转换说明：`references/pica-convert-workflow.md`
+- base/runtime 包列表参考：`references/runtime.md`
+- `linglong.yaml` 模板：`templates/simple.yaml`
+- 字段结构参考：`resources/linglong-schemas.json`
 
-2. 分层架构：
-   基础层 (Base)：最底层的最小运行环境（如基本系统库）。
-   运行时层 (Runtime)：提供通用的库支持（如 Qt、GTK 等），支持多版本并存，避免应用间的依赖冲突。
-   应用层 (App Layer)：仅包含应用自身的二进制文件和私有库，存放在固定的 $PREFIX 目录下。
+## 使用前准备
 
-3. ll-builder
-   核心构建工具。它会创建一个隔离的容器环境，在其中完成源码编译和依赖安装，确保构建过程不污染宿主系统。
-   配置文件：通过在项目根目录 linglong.yaml 定义应用的元数据、依赖的运行时（Runtime）、运行的基础环境（Base）以及构建命令。
-   主要命令：ll-builder build 进行构建，ll-builder run -- bash 进行容器内调试， 使用ll-builder export 导出后缀为uab的玲珑包。
-   ll-builder构建应用时将base作为rootfs创建容器, 项目根目录挂载到容器的 /project 目录，
+- 处理源码项目时，优先参考项目自身提供的开发文档、构建说明、`debian/` 打包信息和构建配置文件。
+- 如果当前工作区存在 `demo/` 示例目录，应优先查找与目标项目类型相近的样例，再决定 `linglong.yaml` 的写法。
+- `ll-builder` 由 `linglong-builder` 包提供；如果系统中没有安装，应先安装 `linglong-builder`。
+- `ll-cli` 由 `linglong-bin` 包提供；如果系统中没有安装，应先安装 `linglong-bin`。
+- 处理 `deb`、`appimage`、`flatpak` 时，系统中需要已安装 `linglong-pica`，并能直接调用 `ll-pica`。
+- 生成 `linglong.yaml` 时，应以 `templates/simple.yaml` 为基础，只替换模板中的内容，不额外拼接模板外的新字段。
 
-4. 环境变量
+## 快速上手
 
-   $PREFIX环境变量指向一个空目录，构建工具会将所有编译成果输出到这里。在 ll-builder 启动的容器内，只有/tmp、/projects 和 $PREFIX 路径是可写的，，避免应用硬编码到系统目录
-   $PREFIX/bin已添加到PATH环境变量，二进制文件可放置其中
-   $PREFIX/share已添加到XDG_DATA_DIRS，该目录下的 applications、icons、mime等XDG标准目录都会生效
+### 1. 从源码生成玲珑包
 
-5. base和runtime列表
-
-linyaps官方已为开发者准备了三套base以及配套的runtime可供选择，目前无法自定义其他的runtime。
-
-已适配 deepin 25 系统的应用：
-
-_deepin 25仅支持qt6， qt5请使用deepin 23_
-
-```yaml
-base: org.deepin.base/25.2.0
-runtime: org.deepin.runtime.dtk/25.2.0
+```bash
+python3 scripts/build_from_project.py \
+  --input /path/to/project-or-archive-or-url \
+  --workdir /tmp/linglong-build
 ```
 
-已适配deepin 23 系统的应用：
+脚本会准备源码目录，生成 `linglong.yaml` 和 `inference-report.md`。默认还会继续执行：
 
-```yaml
-base: org.deepin.base/23.1.0
-runtime: org.deepin.runtime.dtk/23.1.0
+```bash
+ll-builder build
+ll-builder list
+ll-builder export --ref <selected-ref>
 ```
 
-已适配 uos20 系统的应用使用：
+如果只需要生成配置文件，不希望立即构建或导出，可以使用：
 
-```yaml
-base: org.deepin.foundation/20.0.0
-runtime: org.deepin.Runtime/20.0.0
+- `--skip-build`
+- `--skip-export`
+
+### 2. 转换 deb、AppImage 或 Flatpak
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work --build
+bash scripts/convert_package.sh appimage ./demo.AppImage --id io.github.demo.app --version 1.0.0.0 --build
+bash scripts/convert_package.sh flatpak org.kde.kate --build
 ```
 
-未知应用或非qt应用优先使用：
+## 执行原则
 
-```yaml
-base: org.deepin.base/25.2.0
-```
+- 项目文档和打包元数据优先级高于启发式推断。
+- `debian/control`、`debian/changelog`、`debian/rules` 可作为框架识别、版本提取、构建系统选择的重要依据。
+- 如果存在相似的 `demo/` 示例，优先参考其 `base`、`runtime`、`build` 和 `command`。
+- 生成 `linglong.yaml` 时，字段集合以 `resources/linglong-schemas.json` 为准，输出顺序以 `templates/simple.yaml` 为准。
+- 生成完成后，应按 `resources/linglong-schemas.json` 对 manifest 做严格校验；如果出现 schema 外字段、缺少必填字段、类型不匹配或模板占位符未替换，应直接报错，不要继续构建。
+- 自动生成的构建规则必须遵循 `PREFIX` 和 `DESTDIR`。
+- 自动推断的运行依赖要尽量保守，不要写入明显不可用的包名。
+- `buildext` 中只保留 base/runtime 没有提供的包；`references/runtime.md` 中已经记录在 base/runtime 里的包不要重复写入。
+- skill 不应主动删除用户目录中的文件或数据；如果某个操作会删除工作目录之外的内容，必须立即阻塞并要求用户确认。
+- 如果推断报告中仍存在不确定项，不要声称结果已经可以直接投入生产。
 
-不要乱写base和runtime，只能从上面选择。
+## base 和 runtime 选型
 
-## ll-builder 构建脚本
+- Qt6 或 DTK6 项目：优先使用 `org.deepin.base/25.2.1` + `org.deepin.runtime.dtk/25.2.1`
+- Qt6 WebEngine 项目：优先使用 `org.deepin.base/25.2.0` + `org.deepin.runtime.webengine/25.2.0`
+- Qt5 或 DTK5 项目：优先使用 `org.deepin.base/23.1.0` + `org.deepin.runtime.dtk/23.1.0`
+- 在确定版本系列后，优先通过 `ll-cli search ... --show-all-version` 查询远程仓库里的最新可用版本，再写入符合玲珑配置要求的三段式版本。
+- 过滤 `buildext` 依赖时，以 `references/runtime.md` 中记录的 base/runtime 已内置包为准；已由 base/runtime 提供的包不再重复写入 `buildext`。
 
-### 构建流程
+## 注意事项
 
-ll-builder build的内部流程是：
-
-1. 下载base包到缓存目录、如果填写了runtime也会进行下载
-2. 下载sources字段的文件到./linglong/sources目录
-3. 使用base字段作为rootfs创建构建容器，挂载当前目录到容器的/project，如果有配置runtime会挂载runtime到容器
-4. 使用apt安装 buildext.apt.build_depends 列表中的包
-5. 将build字段保存成 build.sh 文件，切换到/project目录执行build字段的构建脚本
-6. 删除构建容器，使用base作为rootfs创建运行时容器
-7. 使用apt安装 buildext.apt.depends 列表中的包
-8. 复制depends的包文件到$PREFIX目录和应用构建产物放一起
-
-### build字段示例
-
-```yaml
-build: |
-  rm -rf build || true
-  mkdir build
-  echo 'target.path = $$(PREFIX)/bin' >> demo.pro
-  cd build && qmake ..
-  make && make install
-```
-
-```yaml
-build: |
-  rm -rf build || true
-  mkdir build && cd build
-  cmake -DCMAKE_INSTALL_PREFIX=$PREFIX ..
-  make && make install
-```
-
-```yaml
-sources:
-  - kind: file
-    url: https://github.com/plantuml/plantuml/releases/download/v1.2025.4/plantuml-1.2025.4.jar
-    name: plantuml.jar
-
-build: |
-mkdir $PREFIX/plantuml
-cp /project/linglong/sources/plantuml.jar $PREFIX/plantuml/
-mkdir -p $PREFIX/etc/
-echo "$PREFIX/lib/x86_64-linux-gnu/graphviz" > $PREFIX/etc/ld.so.conf
-echo "PLANTUML_LIMIT_SIZE=4096" >> $PREFIX/etc/profile
-echo "PLANTUML_JAR_PATH=$PREFIX/plantuml/plantuml.jar" >> $PREFIX/etc/profile
-```
-
-```yaml
-sources:
-  - kind: file
-    url: https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v24.0.2/node-v24.0.2-linux-x64.tar.xz
-    name: nodejs.tar.xz
-    digest: a5da53c8c184111afd324e1ed818c0fb23fe6f0a7d4583d47f41390dd389a027
-cd $PREFIX
-  tar --strip-components 1 -xvf /project/linglong/sources/nodejs.tar.xz
-   mkdir opencode && cd opencode
-  npm init -y
-  npm install opencode-ai --registry=https://registry.npmmirror.com --loglevel verbose
-  mkdir $PREFIX/etc
-  echo "echo PATH=$PREFIX/opencode/node_modules/.bin:\$PATH" >> $PREFIX/etc/profile
-```
-
-### buildext字段示例
-
-用于安装应用构建依赖和安装依赖
-
-```yaml
-buildext:
-  apt:
-    depends:
-      - ffmpeg
-      # ffmpeg依赖这两个包的so，但没写到依赖里，需要手动添加
-      - libblas3
-      - liblapack3
-```
-
-```yaml
-buildext:
-  apt:
-    build_depends:
-      - libcurl4-openssl-dev
-    depends:
-      - libcurl4
-```
-
-### sources字段示例
-
-用于从git远程仓库下载源码
-
-还有一些无法通过apt安装的依赖或应用的二进制。
-
-在一些安全要求较高的环境build容器无法联网，无法在build里使用wget curl下载文件，就可以写到sources里面。
-
-```yaml
-sources:
-  - kind: file
-    url: https://github.com/plantuml/plantuml/releases/download/v1.2025.4/plantuml-1.2025.4.jar
-    name: plantuml.jar
-```
-
-```yaml
-sources:
-  - kind: git
-    url: https://github.com/linuxdeepin/deepin-reader.git
-    name: deepin-reader
-build: |
-  cd linglong/sources/deepin-reader
-  qmake
-  make && make install
-```
-
-### command字段示例
-
-command字段是执行ll-builder run运行应用时默认启动的命令，如果二进制或脚本已安装到$PREFIX/bin目录，可以直接写名字，否则要写全路径
-
-```yaml
-command: [opencode, web]
-```
-
-```yaml
-command: [node]
-```
-
-## 策略规划 (Strategy)
-
-- 根据README、项目名、用户名和主机名自动生成倒置域名格式的app_id和应用名，在linglong.yaml中使用
-- 分析应用的框架（如：Electron、 原生 Qt、 tauri），编写对应的构建脚本，如果分析出不来可以询问用户
-- 根据templates生成linglong.yaml文件， 只替换模板的内容不要添加任何新字段
-- 参考resources/linglong-schemas.json文件理解linglong.yaml的字段格式
-- 猜测应用应用使用什么base（优先考虑deepin 25的base）, 是否使用runtime
-- 检查生成的linglong.yaml是否有错误和多余的内容
-- 使用"ll-builder build"构建玲珑应用，如果构建报错，尝试修改linglong.yaml后再执行构建
-- 使用"ll-builder run"尝试运行玲珑应用，如果运行报错，尝试修改linglong.yaml后再重新构建应用
+- 本 skill 依赖宿主环境已安装 `ll-builder`、`ll-cli`，以及在转换场景下已安装 `linglong-pica`。
+- `ll-builder` 来自 `linglong-builder`，`ll-cli` 来自 `linglong-bin`。
+- 如果宿主工具支持从 skill 目录直接运行脚本，优先用本目录中的脚本入口；如果不支持，也可以直接手动执行上述命令。
+- `agents/openai.yaml` 这类宿主专用元数据不是本 skill 的必需部分；真正可迁移的是 `SKILL.md`、`scripts/` 和 `references/`。

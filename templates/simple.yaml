@@ -1,17 +1,27 @@
-version: "1" # 固定为字符串1，linglong.yaml自己的版本号
+version: "__MANIFEST_VERSION__"
 package:
-  id: org.deepin.demo # 替换成app_id 必须使用倒置域名格式
-  name: xxx # 替换成人类可读的应用名
-  version: 1.0.0.0 # 应用版本
-  kind: app # 固定值
+  id: __PACKAGE_ID__
+  name: __PACKAGE_NAME__
+  version: __PACKAGE_VERSION__
+  kind: app
   description: |
-    这里填写多行详细描述，说明应用的功能。
+__PACKAGE_DESCRIPTION__
 
 command:
-  - xxx # 应用启动时默认执行的命令
+  - __COMMAND__
 
-base: # 字符串，应用运行基础环境，必填
-runtime: # 字符串，如不需要runtime，可删除这个配置项
+base: __BASE__
+runtime: __RUNTIME__
+
+sources:
+__SOURCES__
+
+buildext:
+  apt:
+    build_depends:
+__BUILD_DEPENDS__
+    depends:
+__RUNTIME_DEPENDS__
 
 build: |
-  ## 这里写构建脚本
+__BUILD_SCRIPT__
