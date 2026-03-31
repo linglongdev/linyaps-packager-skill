@@ -182,8 +182,8 @@ bash scripts/convert_package.sh flatpak org.kde.kate --build
 
 ## base 和 runtime 选型
 
-- Qt6 或 DTK6 项目：优先使用 `org.deepin.base/25.2.1` + `org.deepin.runtime.dtk/25.2.1`
-- Qt6 WebEngine 项目：优先使用 `org.deepin.base/25.2.0` + `org.deepin.runtime.webengine/25.2.0`
+- Qt6 或 DTK6 项目：优先使用 `org.deepin.base/25.2.2` + `org.deepin.runtime.dtk/25.2.2`
+- Qt6 WebEngine 项目：优先使用 `org.deepin.base/25.2.2` + `org.deepin.runtime.webengine/25.2.2`
 - Qt5 或 DTK5 项目：优先使用 `org.deepin.base/23.1.0` + `org.deepin.runtime.dtk/23.1.0`
 - 在确定版本系列后，优先通过 `ll-cli search ... --show-all-version` 查询远程仓库里的最新可用版本，再写入符合玲珑配置要求的三段式版本。
 - 过滤 `buildext` 依赖时，以 `references/runtime.md` 中记录的 base/runtime 已内置包为准；已由 base/runtime 提供的包不再重复写入 `buildext`。
