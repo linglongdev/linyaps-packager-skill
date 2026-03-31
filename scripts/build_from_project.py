@@ -16,6 +16,12 @@ from pathlib import Path
 
 import yaml
 
+# Import build flow controller modules for compat-check and dependency fix
+try:
+    from build_flow_controller import BuildFlowController
+except ImportError:
+    BuildFlowController = None
+
 
 DOC_PATTERNS = ["README", "INSTALL", "BUILD", "CONTRIBUTING"]
 SUPPORTED_FILES = [
@@ -1240,6 +1246,14 @@ def main():
     parser.add_argument("--runtime", help="Linglong runtime ref")
     parser.add_argument("--skip-build", action="store_true", help="Only generate files")
     parser.add_argument("--skip-export", action="store_true", help="Do not run ll-builder export")
+    parser.add_argument("--enable-compat-check", action="store_true", default=True,
+                       help="Enable compat check after build (default: True)")
+    parser.add_argument("--no-compat-check", action="store_true",
+                       help="Disable compat check after build")
+    parser.add_argument("--compat-check-timeout", type=int, default=30,
+                       help="Compat check timeout in seconds (default: 30)")
+    parser.add_argument("--max-fix-attempts", type=int, default=3,
+                       help="Maximum dependency fix attempts (default: 3)")
     args = parser.parse_args()
 
     workdir = Path(args.workdir).expanduser().resolve()
@@ -1334,7 +1348,53 @@ def main():
         return
 
     require_command("ll-builder", "linglong-builder", "build Linglong packages")
-    run(["ll-builder", "build"], cwd=workdir, check=True, capture_output=False)
+
+    # Determine compat check setting
+    enable_compat_check = args.enable_compat_check and not args.no_compat_check
+
+    # Use BuildFlowController if available for compat-check and auto-fix
+    if BuildFlowController is not None and enable_compat_check:
+        print("\n" + "=" * 60)
+        print("Using BuildFlowController with compat-check and auto-fix")
+        print("=" * 60)
+
+        try:
+            controller = BuildFlowController(
+                build_dir=workdir,
+                enable_compat_check=enable_compat_check,
+                compat_check_timeout=args.compat_check_timeout,
+                verbose=False
+            )
+
+            # Execute full build flow with compat check and auto-fix
+            success, message = controller.build_with_compat_check_and_auto_fix()
+
+            # Print final status
+            print("\n" + "=" * 60)
+            print("Final Build Status")
+            print("=" * 60)
+            print(f"Build Status: {controller.get_build_status()}")
+            print(f"Compat Check Status: {controller.get_compat_check_status()}")
+            if controller.get_fix_attempts() > 0:
+                print(f"Fix Attempts: {controller.get_fix_attempts()}")
+            print(f"Result: {message}")
+            
+            if not success:
+                print(f"\n✗ Build flow failed: {message}")
+                raise SystemExit(1)
+                
+        except Exception as e:
+            print(f"\n✗ BuildFlowController error: {e}")
+            # Fallback to simple build
+            print("\nFalling back to simple build...")
+            run(["ll-builder", "build"], cwd=workdir, check=True, capture_output=False)
+    else:
+        # Simple build without compact-check
+        print("\n" + "=" * 60)
+        print("Simple Build (compact-check disabled or not available)")
+        print("=" * 60)
+        run(["ll-builder", "build"], cwd=workdir, check=True, capture_output=False)
+        
     if args.skip_export:
         return
 

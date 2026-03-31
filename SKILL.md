@@ -5,6 +5,7 @@ references:
   - references/project-build-workflow.md
   - references/pica-convert-workflow.md
   - references/runtime.md
+  - references/compat-check-workflow.md
 ---
 
 # 玲珑打包技能
@@ -22,6 +23,10 @@ references:
 - base/runtime 包列表参考：`references/runtime.md`
 - `linglong.yaml` 模板：`templates/simple.yaml`
 - 字段结构参考：`resources/linglong-schemas.json`
+- 兼容性测试模块：`scripts/compat_checker.py`
+- 依赖分析模块：`scripts/dependency_analyzer.py`
+- 依赖修复模块：`scripts/dependency_fixer.py`
+- 构建流程控制器：`scripts/build_flow_controller.py`
 
 ## 使用前准备
 
@@ -31,6 +36,105 @@ references:
 - `ll-cli` 由 `linglong-bin` 包提供；如果系统中没有安装，应先安装 `linglong-bin`。
 - 处理 `deb`、`appimage`、`flatpak` 时，系统中需要已安装 `linglong-pica`，并能直接调用 `ll-pica`。
 - 生成 `linglong.yaml` 时，应以 `templates/simple.yaml` 为基础，只替换模板中的内容，不额外拼接模板外的新字段。
+
+## 兼容性测试（Compatibility Check）和依赖修复
+
+本 skill 已集成 `linyaps-pica-helper` 的兼容性测试（compat-check）和依赖修复能力，能够：
+
+1. **自动兼容性测试**：在构建后自动执行运行时测试，验证应用是否能正常启动
+2. **依赖分析**：通过 `apt-file` 分析缺失的动态库依赖
+3. **依赖修复**：自动下载并安装缺失的依赖包，或为非标准目录中的库创建软链接
+4. **自动重建**：修复依赖后自动重新构建并再次验证
+
+### 工作流程
+
+```
+构建 → 兼容性测试 → 检测失败？ → 否：完成
+                    ↓ 是
+              分析缺失依赖
+                    ↓
+              下载并安装依赖
+                    ↓
+              重建 → 兼容性测试 → 检测失败？ → 否：完成
+                    ↓ 是
+              尝试其他修复方法
+                    ↓
+              最多 3 次修复尝试
+                    ↓
+              最终构建（跳过测试）
+```
+
+### 使用参数
+
+- `--enable-compat-check`：启用兼容性测试（默认启用）
+- `--no-compat-check`：禁用兼容性测试
+- `--compat-check-timeout <seconds>`：兼容性测试超时时间（默认 30 秒）
+- `--max-fix-attempts <number>`：最大修复尝试次数（默认 3 次）
+
+### 前置要求
+
+使用兼容性测试和依赖修复功能需要：
+
+1. **apt-file**：用于分析缺失依赖
+   ```bash
+   apt-get install apt-file
+   apt-file update
+   ```
+
+2. **apt-get**：用于下载依赖包
+   ```bash
+   apt-get update
+   ```
+
+3. **zstd**：用于处理 files.tar.zst 归档（可选，不安装时会使用 Python 实现）
+
+### 命令示例
+
+启用紧凑检查和自动修复：
+
+```bash
+python3 scripts/build_from_project.py \
+  --input /path/to/project \
+  --workdir /tmp/linglong-build \
+  --enable-compat-check
+```
+
+禁用兼容性测试：
+
+```bash
+python3 scripts/build_from_project.py \
+  --input /path/to/project \
+  --workdir /tmp/linglong-build \
+  --no-compat-check
+```
+
+自定义兼容性测试超时时间：
+
+```bash
+python3 scripts/build_from_project.py \
+  --input /path/to/project \
+  --workdir /tmp/linglong-build \
+  --compat-check-timeout 60
+```
+
+### 输出文件
+
+构建流程会生成以下文件：
+
+- `missing_deps.csv`：缺失的依赖列表（由 ldd 检测）
+- `missing-libs.packages`：匹配的包列表（由 apt-file 分析）
+- `nonStrDir_found_libs.csv`：在非标准目录中找到的库
+- `files.tar.zst`：应用文件的压缩归档（使用 zstd 压缩）
+- `compat-check-errors/run-error.log`：兼容性测试错误日志
+
+### 注意事项
+
+- 兼容性测试使用 `ll-builder run` 命令，默认 30 秒超时
+- 超时（退出码 124）被视为检查通过，因为应用已成功启动
+- 依赖分析需要网络连接以查询 apt-file 缓存
+- 依赖修复会修改 `linglong.yaml`，添加 `buildext.apt.depends` 段
+- 如果超过最大修复次数仍未成功，会执行最终构建（跳过输出检查）
+- 构建失败（退出码 255）通常表示依赖问题，会触发自动修复流程
 
 ## 快速上手
 

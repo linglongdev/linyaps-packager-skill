@@ -24,7 +24,16 @@
 3. 将 Flatpak 应用转换为玲珑包
 
 - 通过 `ll-pica flatpak convert` 转换 Flatpak 应用名
+4. 自动兼容性测试和依赖修复
 
+- 在构建后自动执行兼容性测试（Compatibility Check）
+- 检测应用是否能正常启动
+- 自动分析缺失的动态库依赖
+- 自动下载并安装缺失的依赖包
+- 为非标准目录中的库创建软链接
+- 修复依赖后自动重建并再次验证
+- 支持最多 3 次修复尝试
+- 详细文档：[references/compatibility-check-workflow.md](references/compatibility-check-workflow.md)
 ## 目录结构
 
 - `SKILL.md`
