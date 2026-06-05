@@ -111,15 +111,19 @@ references:
 ```
 Phase 1: ll-pica convert
     ↓
-Phase 2: 初始构建 (ll-builder build --skip-output-check)
+Phase 2: 追加标识
+    ↓
+    读取 linglong.yaml，向build字段末尾追加构建规则"echo $(date +%s) > $PREFIX/.linyaps-genius"，记录时间戳
+    ↓    
+Phase 3: 初始构建 (ll-builder build --skip-output-check)
     ↓
     备份原始 linglong.yaml 到 linglong.yaml.original
     ↓
-Phase 3: 兼容性测试 (ll-builder run)
+Phase 4: 兼容性测试 (ll-builder run)
     ↓
 检测失败？ → 否：Phase 7: 导出 Layer → 完成
     ↓ 是
-Phase 4: 依赖修复尝试
+Phase 5: 依赖修复尝试
     ↓
     从 files.tar.zst 解压 files 目录（确保使用最新文件）
     ↓
@@ -127,23 +131,23 @@ Phase 4: 依赖修复尝试
     ↓
 第1次尝试：模式2（扫描非标准目录库，创建软链接）
     ↓ 失败
-Phase 5: 重建 (ll-builder build --skip-output-check)
+Phase 6: 重建 (ll-builder build --skip-output-check)
     ↓
-Phase 6: 兼容性测试
+Phase 7: 兼容性测试
     ↓ 失败
 第2次尝试：模式0（追加运行时依赖 depends）
     ↓ 失败
-Phase 5: 重建 (ll-builder build --skip-output-check)
+Phase 6: 重建 (ll-builder build --skip-output-check)
     ↓
-Phase 6: 兼容性测试
+Phase 7: 兼容性测试
     ↓ 失败
 第3次尝试：模式1（下载安装依赖 buildext.apt.depends）
     ↓ 失败
 模式2: 扫描非标准目录库 (软链接)
     ↓
-Phase 5: 重建 (ll-builder build --skip-output-check)
+Phase 6: 重建 (ll-builder build --skip-output-check)
     ↓
-Phase 6: 兼容性测试 (ll-builder run)
+Phase 7: 兼容性测试 (ll-builder run)
     ↓
 检测失败？ → 否：Phase 7: 导出 Layer → 完成
     ↓ 是
@@ -484,7 +488,9 @@ Layer Export Status: passed
 - 转换流程包含完整的兼容性测试和依赖修复功能
 - 支持通过 `--final-missing-csv` 参数更新包的 ID 和名称
 - Layer 文件会根据兼容性测试结果存储到不同目录
-- AppImage 和 Flatpak 转换仍使用 `ll-pica` 的对应子命令
+- AppImage转换使用`ll-appimage-convert`对应子命令
+- Flatpak转换使用`ll-pica-flatpak`对应子命令
+
 
 ## 快速上手
 
