@@ -490,7 +490,9 @@ class DebConverter:
         # 检查超过最大尝试次数
         if self.fix_attempts > self.max_fix_attempts:
             print(f"\n✗ Exceeded maximum fix attempts ({self.max_fix_attempts})")
-            return False, "Exceeded maximum fix attempts"
+            # 超过最大尝试次数时，执行最终构建
+            # layer 导出由 convert() 方法统一处理
+            return self._attempt_final_build()
         
         # 确保使用最新的 files 目录（从最新的 files.tar.zst 重新解压）
         print("Ensuring fresh files directory from latest files.tar.zst...")
@@ -577,6 +579,7 @@ class DebConverter:
             if check_success:
                 print(f"\n✓ Compat check passed after fix: {check_msg}")
                 print("# COMPAT_END")
+                # 兼容性测试通过，返回成功状态，让 convert() 方法统一处理 layer 导出
                 return True, f"Build and compat check passed after {self.fix_attempts} fix attempt(s)"
             else:
                 print(f"\n✗ Compat check still failed: {check_msg}")
@@ -589,11 +592,14 @@ class DebConverter:
                 return self._attempt_dependency_fix()
         else:
             print("\nCompat check disabled, skipping")
+            # 兼容性测试禁用，返回成功状态，让 convert() 方法统一处理 layer 导出
             return True, f"Rebuild successful after {self.fix_attempts} fix attempt(s)"
     
     def _attempt_final_build(self) -> Tuple[bool, str]:
         """
-        执行最终构建（无输出检查）并导出 layer
+        执行最终构建（无输出检查）
+        
+        注意：此方法不执行 layer 导出，layer 导出由 convert() 方法统一处理
         
         Returns:
             (成功状态, 状态描述)
@@ -607,23 +613,10 @@ class DebConverter:
         
         if build_success:
             print(f"\n✓ Final build successful")
-            
-            # 导出 layer 到 forceTested 目录
-            if self.enable_layer_export:
-                self._export_layer()
-                self._store_layer()
-            
             return True, "Final build successful (compat check bypassed)"
         else:
             print(f"\n✗ Final build failed: {build_msg}")
             print(f"  └─ Cause: Build Error (exit code 1)")
-            
-            # 即使构建失败，也尝试导出 layer 到 forceTested 目录
-            if self.enable_layer_export:
-                print("\n⚠ Warning: Attempting force layer export despite build failure")
-                self._export_layer()
-                self._store_layer()
-            
             return False, f"All fix attempts failed. Final error: {build_msg}"
     
     def _analyze_and_fix_dependencies(self, mode: int = 2) -> Tuple[bool, str]:
@@ -986,10 +979,6 @@ class DebConverter:
         Returns:
             是否成功
         """
-        if self.layer_export_status != "passed":
-            print("Layer export failed, skipping layer storage")
-            return False
-        
         # 查找 layer 文件（递归查找，因为 ll-builder export 可能将文件放在子目录中）
         layer_files = list(self.app_build_dir.rglob("*_binary.layer"))
         if not layer_files:
@@ -1081,10 +1070,12 @@ class DebConverter:
                     if self.missing_deps_strategy == 'force':
                         self._print("\nStrategy: force - triggering dependency fix", "normal")
                         print("# COMPAT_END")
+                        # 调用依赖修复，layer 导出由 convert() 方法统一处理
                         return self._attempt_dependency_fix()
                     elif self.missing_deps_strategy == 'ask':
                         self._print("\nStrategy: ask - asking user for decision", "normal")
                         print("# COMPAT_END")
+                        # 调用用户询问，layer 导出由 convert() 方法统一处理
                         return self._ask_user_for_fix_strategy(missing_deps)
                     elif self.missing_deps_strategy == 'ignore':
                         self._print("\nStrategy: ignore - skipping dependency fix", "normal")
@@ -1096,13 +1087,17 @@ class DebConverter:
                 self._print(f"\n✗ Compat check failed: {check_msg}", "normal")
                 # 兼容性测试失败，触发依赖修复流程
                 print("# COMPAT_END")
-                return self._attempt_dependency_fix()
+                fix_success, fix_msg = self._attempt_dependency_fix()
+                # 无论修复结果如何，都继续执行 layer 导出
+                if not fix_success:
+                    self._print(f"\n⚠ Dependency fix failed: {fix_msg}", "normal")
+                    self._print("Proceeding with layer export anyway...", "normal")
             
             print("# COMPAT_END")
         else:
             self._print("\nCompat check disabled, skipping", "normal")
         
-        # Phase 4: 导出 layer
+        # Phase 4: 导出 layer（无论兼容性测试结果如何，都强制导出）
         if self.enable_layer_export:
             self._export_layer()
             self._store_layer()
@@ -1221,6 +1216,7 @@ class DebConverter:
                     return True, "Conversion completed successfully (user chose to skip fix)"
                 elif choice == 'Y':
                     self._print("\nTriggering dependency fix", "normal")
+                    # 调用依赖修复，layer 导出由 convert() 方法统一处理
                     return self._attempt_dependency_fix()
                 elif choice == 'D':
                     self._show_missing_deps_details()
