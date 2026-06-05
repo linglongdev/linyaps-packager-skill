@@ -89,7 +89,7 @@ class DependencyFixer:
     
     def _find_library_in_non_std_dir(self, files_dir: Path, library_name: str) -> List[Path]:
         """
-        在非标准目录中查找库
+        在非标准目录中查找库（使用通配符匹配）
         
         Args:
             files_dir: 文件目录
@@ -106,8 +106,9 @@ class DependencyFixer:
             "usr/local/lib", "usr/local/lib64"
         }
         
-        # 在 files_dir 中查找匹配的库文件
-        for so_file in files_dir.rglob("*.so*"):
+        # 使用通配符查找所有匹配的库文件
+        # 例如：libcdio.so 会匹配 libcdio.so, libcdio.so.19, libcdio.so.19.0.0 等
+        for so_file in files_dir.rglob(f"{library_name}*"):
             # 获取相对于 files_dir 的路径
             rel_path = so_file.relative_to(files_dir)
             first_dir = rel_path.parts[0] if rel_path.parts else ""
@@ -116,9 +117,8 @@ class DependencyFixer:
             if first_dir in std_lib_dirs:
                 continue
             
-            # 检查文件名是否匹配（支持通配符）
-            so_filename = so_file.name
-            if self._library_matches(library_name, so_filename):
+            # 只处理 .so 文件
+            if ".so" in so_file.name:
                 found_paths.append(so_file)
         
         return found_paths
@@ -165,7 +165,7 @@ class DependencyFixer:
         print(f"\nCreating symlinks in {target_lib_dir}...")
         
         for lib in libraries:
-            # 在源目录中查找匹配的库文件
+            # 在源目录中查找匹配的库文件（使用通配符）
             found_files = self._find_library_in_non_std_dir(source_dir, lib)
             
             if not found_files:
@@ -173,15 +173,26 @@ class DependencyFixer:
                     print(f"  ✗ Library not found: {lib}")
                 continue
             
+            # 检查原始库名是否被找到
+            found_original = False
+            best_match_path = None
+            
             # 为所有找到的文件创建软链接
             for source_file in found_files:
-                # 提取原始库名
-                original_lib_name = lib
+                found_lib_name = source_file.name
                 
-                # 创建软链接目标
-                symlink_path = target_lib_dir / original_lib_name
+                # 检查是否找到了原始库名
+                if found_lib_name == lib:
+                    found_original = True
                 
-                # 如果软链接已存在，跳过
+                # 记录最佳匹配路径（第一个找到的）
+                if best_match_path is None:
+                    best_match_path = source_file
+                
+                # 创建软链接（使用文件名作为软链接名）
+                symlink_path = target_lib_dir / found_lib_name
+                
+                # 如果软链接已存在，删除
                 if symlink_path.exists() or symlink_path.is_symlink():
                     symlink_path.unlink()
                 
@@ -191,6 +202,23 @@ class DependencyFixer:
                     symlink_path.symlink_to(rel_path)
                     symlinks_created.append(str(symlink_path))
                     print(f"  ✓ Created symlink: {symlink_path} -> {source_file}")
+                except Exception as e:
+                    print(f"  ✗ Failed to create symlink for {found_lib_name}: {e}")
+            
+            # 如果原始库名本身没有找到，但找到了相关文件，则为原始库名创建软链接
+            if not found_original and best_match_path is not None:
+                symlink_path = target_lib_dir / lib
+                
+                # 如果软链接已存在，删除
+                if symlink_path.exists() or symlink_path.is_symlink():
+                    symlink_path.unlink()
+                
+                # 创建相对软链接
+                try:
+                    rel_path = os.path.relpath(best_match_path, symlink_path.parent)
+                    symlink_path.symlink_to(rel_path)
+                    symlinks_created.append(str(symlink_path))
+                    print(f"  ✓ Created symlink for original name: {symlink_path} -> {best_match_path}")
                 except Exception as e:
                     print(f"  ✗ Failed to create symlink for {lib}: {e}")
         
