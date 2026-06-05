@@ -22,6 +22,25 @@ from dependency_fixer import DependencyFixer
 class DebConverter:
     """Deb 包转换器 - 完整的转换流程"""
     
+    def _print(self, message: str, level: str = "normal") -> None:
+        """
+        根据输出级别打印消息
+        
+        Args:
+            message: 要打印的消息
+            level: 消息级别（quiet/normal/verbose）
+        """
+        if self.output_level == "quiet":
+            # quiet 模式：只打印最终结果
+            return
+        elif self.output_level == "normal":
+            # normal 模式：打印 normal 和 quiet 级别的消息
+            if level in ["normal", "quiet"]:
+                print(message)
+        elif self.output_level == "verbose":
+            # verbose 模式：打印所有级别的消息
+            print(message)
+    
     def __init__(
         self,
         deb_file: Path,
@@ -31,7 +50,8 @@ class DebConverter:
         enable_layer_export: bool = True,
         ll_stored_pool: Optional[Path] = None,
         final_missing_csv: Optional[Path] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        quiet: bool = False
     ):
         """
         初始化 Deb 包转换器
@@ -45,6 +65,7 @@ class DebConverter:
             ll_stored_pool: layer 存储目录
             final_missing_csv: final-missing CSV 文件路径
             verbose: 是否显示详细输出
+            quiet: 是否只显示最终结果
         """
         self.deb_file = Path(deb_file).resolve()
         self.workdir = Path(workdir).resolve()
@@ -54,6 +75,10 @@ class DebConverter:
         self.ll_stored_pool = Path(ll_stored_pool).resolve() if ll_stored_pool else None
         self.final_missing_csv = Path(final_missing_csv).resolve() if final_missing_csv else None
         self.verbose = verbose
+        self.quiet = quiet
+        
+        # 输出级别：quiet < normal < verbose
+        self.output_level = "quiet" if quiet else ("verbose" if verbose else "normal")
         
         # 包信息
         self._deb_id = ""
@@ -748,46 +773,46 @@ class DebConverter:
         if new_id and orig_name:
             yaml_file = self.app_build_dir / "linglong.yaml"
             if yaml_file.exists():
-                print("Updating linglong.yaml with CSV data...")
+                self._print("Updating linglong.yaml with CSV data...", "normal")
                 self._update_yaml_id_and_name(yaml_file, new_id, orig_name, orig_deb_id)
         
         # Phase 2: 初始构建（跳过输出检查，避免因非必要库导致构建失败）
-        print("\n" + "=" * 60)
-        print("Phase 2: Initial Build (skip output check)")
-        print("=" * 60)
+        self._print("\n" + "=" * 60, "normal")
+        self._print("Phase 2: Initial Build (skip output check)", "normal")
+        self._print("=" * 60, "normal")
         
         build_success, build_msg = self._execute_build(skip_output_check=True)
         
         if not build_success:
-            print(f"\n✗ Initial build failed: {build_msg}")
+            self._print(f"\n✗ Initial build failed: {build_msg}", "normal")
             return False, build_msg
         
-        print(f"\n✓ Build successful")
+        self._print(f"\n✓ Build successful", "normal")
         
         # Phase 3: 兼容性测试
         if self.enable_compact_check:
-            print("\n" + "=" * 60)
-            print("Phase 3: Compat Check")
-            print("=" * 60)
+            self._print("\n" + "=" * 60, "normal")
+            self._print("Phase 3: Compat Check", "normal")
+            self._print("=" * 60, "normal")
             
             check_success, check_msg = self.compat_checker.check()
             self.compact_check_status = self.compat_checker.get_status()
             
             if check_success:
-                print(f"\n✓ Compat check passed: {check_msg}")
+                self._print(f"\n✓ Compat check passed: {check_msg}", "normal")
             else:
-                print(f"\n✗ Compat check failed: {check_msg}")
+                self._print(f"\n✗ Compat check failed: {check_msg}", "normal")
                 # 兼容性测试失败，触发依赖修复流程
                 return self._attempt_dependency_fix()
         else:
-            print("\nCompat check disabled, skipping")
+            self._print("\nCompat check disabled, skipping", "normal")
         
         # Phase 4: 导出 layer
         if self.enable_layer_export:
             self._export_layer()
             self._store_layer()
         
-        # 打印最终状态
+        # 打印最终状态（在所有模式下都显示）
         print("\n" + "=" * 60)
         print("Final Status")
         print("=" * 60)
@@ -888,6 +913,12 @@ def main():
         help="显示详细输出"
     )
     
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="只显示最终结果"
+    )
+    
     args = parser.parse_args()
     
     # 处理布尔参数
@@ -903,13 +934,14 @@ def main():
         enable_layer_export=enable_layer_export,
         ll_stored_pool=Path(args.ll_stored_pool) if args.ll_stored_pool else None,
         final_missing_csv=Path(args.final_missing_csv) if args.final_missing_csv else None,
-        verbose=args.verbose
+        verbose=args.verbose,
+        quiet=args.quiet
     )
     
     # 执行转换
     success, message = converter.convert()
     
-    # 打印最终状态
+    # 打印最终状态（在所有模式下都显示）
     print("\n" + "=" * 60)
     print("Conversion Summary")
     print("=" * 60)

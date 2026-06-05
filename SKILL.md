@@ -114,6 +114,7 @@ Phase 8: 导出 Layer → 完成
 - `--final-missing-csv <path>`：final-missing CSV 文件路径（用于包信息查找）
 - `--ll-stored-pool <dir>`：layer 存储目录（默认：./StoredPool）
 - `--verbose`：显示详细输出
+- `--quiet`：只显示最终结果（适合脚本自动化）
 
 ### 前置要求
 
@@ -231,6 +232,101 @@ python3 scripts/build_from_project.py \
   --compact-check-timeout 60
 ```
 
+### 输出级别控制
+
+Deb 包转换器支持三种输出级别：
+
+- **normal（默认）**：显示简要的进度信息，包括 Phase 标题和关键结果
+  - 适合一般使用和交互式操作
+  - 提供足够的反馈，但不会过于冗长
+
+- **quiet**：只显示最终结果（Final Status 和 Conversion Summary）
+  - 适合脚本自动化和 CI/CD 环境
+  - 减少输出噪音，便于日志分析
+
+- **verbose**：显示所有详细信息，包括命令执行和详细错误
+  - 适合问题排查和调试
+  - 提供完整的执行过程信息
+
+**使用示例**：
+
+```bash
+# Normal 模式（默认）
+bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work
+
+# Quiet 模式
+bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work --quiet
+
+# Verbose 模式
+bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work --verbose
+```
+
+**输出对比**：
+
+Normal 模式输出：
+```
+============================================================
+Phase 2: Initial Build (skip output check)
+============================================================
+
+✓ Build successful
+
+============================================================
+Phase 3: Compat Check
+============================================================
+
+✓ Compat check passed: Application started successfully
+
+============================================================
+Final Status
+============================================================
+Build Status: passed
+Compat Check Status: passed
+Layer Export Status: passed
+```
+
+Quiet 模式输出：
+```
+============================================================
+Final Status
+============================================================
+Build Status: passed
+Compat Check Status: passed
+Layer Export Status: passed
+```
+
+Verbose 模式输出：
+```
+============================================================
+Phase 1: ll-pica convert
+============================================================
+Executing: ll-pica convert -c demo.deb -w /tmp/pica-work/pica-work
+Working directory: /tmp/pica-work/pica-work
+✓ ll-pica convert successful
+
+============================================================
+Phase 2: Initial Build (skip output check)
+============================================================
+Executing: ll-builder build --skip-output-check
+Working directory: /tmp/pica-work/pica-work/package/demo
+[详细的构建输出...]
+✓ Build successful
+
+============================================================
+Phase 3: Compat Check
+============================================================
+Executing: ll-builder run
+[详细的运行时测试输出...]
+✓ Compat check passed: Application started successfully
+
+============================================================
+Final Status
+============================================================
+Build Status: passed
+Compat Check Status: passed
+Layer Export Status: passed
+```
+
 ### 输出文件
 
 #### Deb 包转换输出文件
@@ -318,6 +414,7 @@ bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work
 - `--final-missing-csv <path>`：final-missing CSV 文件路径（用于包信息查找）
 - `--ll-stored-pool <dir>`：layer 存储目录（默认：./StoredPool）
 - `--verbose`：显示详细输出
+- `--quiet`：只显示最终结果（适合脚本自动化）
 
 **Deb 转换工作流程**：
 1. **Phase 1**: 执行 `ll-pica convert` 转换 deb 包
