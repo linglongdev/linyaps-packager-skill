@@ -59,12 +59,19 @@ flowchart TD
     CheckMaxAttempts -->|否| AnalyzeDeps[分析缺失依赖]
     
     AnalyzeDeps --> FoundPackages{找到缺失包?}
-    FoundPackages -->|是| DownloadDeps[下载并安装依赖]
-    FoundPackages -->|否| ScanNonStd[扫描非标准目录库]
+    FoundPackages -->|是| Mode0[模式0: 追加运行时依赖]
+    FoundPackages -->|否| ScanNonStd[模式2: 扫描非标准目录库]
     
-    DownloadDeps --> MergeDeps[合并依赖到 files 目录]
-    MergeDeps --> UpdateYamlDeps[更新 linglong.yaml]
-    UpdateYamlDeps --> UpdateTarDeps[更新 files.tar.zst]
+    Mode0 --> Mode0Success{模式0成功?}
+    Mode0Success -->|是| UpdateTarDeps[更新 files.tar.zst]
+    Mode0Success -->|否| Mode1[模式1: 下载安装依赖]
+    
+    Mode1 --> Mode1Success{模式1成功?}
+    Mode1Success -->|是| MergeDeps[合并依赖到 files 目录]
+    Mode1Success -->|否| ScanNonStd
+    
+    MergeDeps --> UpdateYamlDeps[更新 linglong.yaml<br/>buildext.apt.depends]
+    UpdateYamlDeps --> UpdateTarDeps
     
     ScanNonStd --> CreateSymlinks[创建软链接]
     CreateSymlinks --> UpdateTarSymlinks[更新 files.tar.zst]
@@ -302,7 +309,40 @@ def analyze_missing_deps(self, force_update_cache: bool = False) -> Tuple[bool, 
 - `missing_deps.csv` - 缺失的依赖列表
 - `missing-libs.packages` - 匹配的包列表
 
-#### 8.2 下载并安装依赖
+#### 8.2 依赖修复的3个模式
+
+当兼容性测试失败时，系统会按顺序尝试以下3个修复模式：
+
+##### 模式0：运行时依赖（最轻量）
+
+```python
+def _update_yaml_with_runtime_depends(self, packages: List[str]) -> bool:
+    """向 linglong.yaml 的 depends 字段追加运行时依赖"""
+    # 读取 linglong.yaml
+    # 合并现有的 depends
+    # 去重并添加新依赖
+    # 写回文件
+```
+
+**功能：**
+- 向 `linglong.yaml` 的 `depends` 字段追加缺失的依赖包名
+- 这些依赖由运行时环境（runtime/base）提供
+- 不会打包到应用中
+
+**优点：**
+- 最轻量，不增加包体积
+- 符合玲珑最佳实践
+- 依赖由运行时环境统一管理
+
+**缺点：**
+- 依赖运行时环境提供这些包
+- 如果运行时环境不包含这些包，应用仍无法运行
+
+**适用场景：**
+- 缺失的依赖是常见的系统库
+- 运行时环境（如 `org.deepin.runtime.dtk`）已经包含这些依赖
+
+##### 模式1：构建时依赖（中等）
 
 ```python
 def download_and_install_dependencies(self, packages: List[str]) -> Tuple[bool, Path]:
@@ -318,7 +358,48 @@ def download_and_install_dependencies(self, packages: List[str]) -> Tuple[bool, 
 - 合并到 files 目录
 - 更新 linglong.yaml 添加 buildext.apt.depends
 
-#### 8.3 扫描非标准目录库
+**优点：**
+- 确保依赖可用，不依赖运行时环境
+- 可以精确控制依赖版本
+
+**缺点：**
+- 增加包体积
+- 依赖更新需要重新打包
+
+**适用场景：**
+- 缺失的依赖不在运行时环境中
+- 需要特定版本的依赖
+
+##### 模式2：非标准目录库（最重）
+
+```python
+def scan_non_std_dir_libraries(self, ...) -> Tuple[bool, List[str]]:
+    """扫描非标准目录中的库"""
+    # 在 files 目录中查找缺失的库
+    # 创建软链接到 files/lib 目录
+```
+
+**功能：**
+- 在 files 目录中查找缺失的库
+- 创建软链接到 files/lib 目录
+- 支持通配符匹配（如 `libcdio.so.19*`）
+
+**优点：**
+- 可以处理特殊情况的库
+- 不需要下载额外的包
+
+**缺点：**
+- 最不稳定，可能找到错误的库
+- 软链接可能失效
+- 不符合玲珑的最佳实践
+
+**适用场景：**
+- 缺失的库在应用的非标准目录中
+- 其他模式都失败时的最后尝试
+
+**修复流程：** 模式0 → 模式1 → 模式2，每个模式失败后自动尝试下一个模式。
+
+#### 8.4 重建
 
 ```python
 def scan_non_std_dir_libraries(self, ...) -> Tuple[bool, List[str]]:
