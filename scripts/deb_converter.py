@@ -104,7 +104,8 @@ class DebConverter:
         self.compat_checker = CompatChecker(
             self.app_build_dir,
             enable_compact_check,
-            compact_check_timeout
+            compact_check_timeout,
+            verbose
         )
         self.dependency_analyzer = DependencyAnalyzer(self.app_build_dir, verbose)
         self.dependency_fixer = DependencyFixer(self.app_build_dir, verbose)
@@ -471,28 +472,36 @@ class DebConverter:
         print("\n" + "=" * 60)
         print(f"Phase 5: Rebuild After Fix {self.fix_attempts}")
         print("=" * 60)
+        print("# BUILD_START")
         
         rebuild_success, rebuild_msg = self._execute_build(skip_output_check=False)
         
         if not rebuild_success:
             print(f"\n✗ Rebuild failed: {rebuild_msg}")
+            print("# BUILD_END")
             return self._attempt_final_build()
+        
+        print(f"\n✓ Rebuild successful")
+        print("# BUILD_END")
         
         # 再次执行兼容性测试
         if self.enable_compact_check:
             print("\n" + "=" * 60)
             print(f"Phase 6: Compat Check After Fix {self.fix_attempts}")
             print("=" * 60)
+            print("# COMPAT_START")
             
             check_success, check_msg = self.compat_checker.check()
             self.compact_check_status = self.compat_checker.get_status()
             
             if check_success:
                 print(f"\n✓ Compat check passed after fix: {check_msg}")
+                print("# COMPAT_END")
                 return True, f"Build and compat check passed after {self.fix_attempts} fix attempt(s)"
             else:
                 print(f"\n✗ Compat check still failed: {check_msg}")
                 # 尝试下一轮修复
+                print("# COMPAT_END")
                 return self._attempt_dependency_fix()
         else:
             print("\nCompat check disabled, skipping")
@@ -780,20 +789,24 @@ class DebConverter:
         self._print("\n" + "=" * 60, "normal")
         self._print("Phase 2: Initial Build (skip output check)", "normal")
         self._print("=" * 60, "normal")
+        print("# BUILD_START")
         
         build_success, build_msg = self._execute_build(skip_output_check=True)
         
         if not build_success:
             self._print(f"\n✗ Initial build failed: {build_msg}", "normal")
+            print("# BUILD_END")
             return False, build_msg
         
         self._print(f"\n✓ Build successful", "normal")
+        print("# BUILD_END")
         
-        # Phase 3: 兼容性测试
+        # Phase 3: 兼容性测试（独立步骤）
         if self.enable_compact_check:
             self._print("\n" + "=" * 60, "normal")
             self._print("Phase 3: Compat Check", "normal")
             self._print("=" * 60, "normal")
+            print("# COMPAT_START")
             
             check_success, check_msg = self.compat_checker.check()
             self.compact_check_status = self.compat_checker.get_status()
@@ -803,7 +816,10 @@ class DebConverter:
             else:
                 self._print(f"\n✗ Compat check failed: {check_msg}", "normal")
                 # 兼容性测试失败，触发依赖修复流程
+                print("# COMPAT_END")
                 return self._attempt_dependency_fix()
+            
+            print("# COMPAT_END")
         else:
             self._print("\nCompat check disabled, skipping", "normal")
         

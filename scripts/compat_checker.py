@@ -12,7 +12,7 @@ from typing import Optional, Tuple
 class CompatChecker:
     """兼容性测试器 - 执行运行时测试"""
     
-    def __init__(self, build_dir: Path, enable_compat_check: bool = True, timeout: int = 30):
+    def __init__(self, build_dir: Path, enable_compat_check: bool = True, timeout: int = 30, verbose: bool = False):
         """
         初始化兼容性测试器
         
@@ -20,10 +20,12 @@ class CompatChecker:
             build_dir: 构建目录
             enable_compat_check: 是否启用兼容性测试
             timeout: 超时时间（秒）
+            verbose: 是否显示详细输出
         """
         self.build_dir = Path(build_dir).resolve()
         self.enable_compat_check = enable_compat_check
         self.timeout = timeout
+        self.verbose = verbose
         self.compat_checking_status = "N/A"
         self.error_log: Optional[Path] = None
         
@@ -49,7 +51,7 @@ class CompatChecker:
             result = subprocess.run(
                 ["timeout", str(self.timeout), "ll-builder", "run"],
                 cwd=self.build_dir,
-                capture_output=True,
+                capture_output=not self.verbose,
                 text=True,
                 timeout=self.timeout + 10  # 额外的 10 秒缓冲
             )
