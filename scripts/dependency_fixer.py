@@ -472,6 +472,9 @@ class DependencyFixer:
         """
         将依赖合并到 files 目录
         
+        参考 pica-helper 的实现：直接将 usr/* 递归复制到 files/ 目录
+        不删除现有 files 目录，而是就地合并
+        
         Args:
             extracted_deps_dir: 解压后的依赖目录
             target_files_dir: 目标 files 目录
@@ -482,41 +485,39 @@ class DependencyFixer:
         extracted_deps_dir = Path(extracted_deps_dir).resolve()
         target_files_dir = Path(target_files_dir).resolve()
         
-        # 确保使用最新的 files 目录（删除现有目录并重新解压）
-        if not self.ensure_fresh_files_dir(target_files_dir):
-            return False, []
-        
+        # 只确保目录存在，不删除！
         target_files_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"\nMerging dependencies to {target_files_dir}...")
         
         added_files = []
         
-        # 将 usr/ 下的内容复制到 files/ 根目录
+        # 将 usr/ 下的内容复制到 files/ 根目录（参考 pica-helper 的 cp -rf usr/* files/）
         usr_dir = extracted_deps_dir / "usr"
         if usr_dir.exists():
             for item in usr_dir.iterdir():
                 dest = target_files_dir / item.name
                 
                 try:
-                    if dest.exists():
-                        if dest.is_dir():
-                            # 目录已存在，递归复制
-                            for sub_item in item.rglob("*"):
-                                rel_path = sub_item.relative_to(item)
-                                dest_sub = dest / rel_path
-                                dest_sub.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(sub_item, dest_sub)
-                                added_files.append(str(rel_path))
-                        # 如果是已存在的文件，跳过
-                    else:
-                        shutil.copytree(item, dest, symlinks=True, dirs_exist_ok=False)
-                        # 记录复制的文件
-                        for copied_file in dest.rglob("*"):
+                    # 使用 dirs_exist_ok=True 允许合并到现有目录
+                    # 使用 symlinks=False 复制实际数据，不保留符号链接
+                    shutil.copytree(
+                        item, 
+                        dest, 
+                        dirs_exist_ok=True,  # 允许目录已存在
+                        symlinks=False        # 复制实际数据，不保留链接
+                    )
+                    # 记录复制的文件
+                    for copied_file in dest.rglob("*"):
+                        if copied_file.is_file():
                             rel_path = copied_file.relative_to(target_files_dir)
                             added_files.append(str(rel_path))
+                    print(f"  ✓ Merged {item.name}")
                 except Exception as e:
                     print(f"  ✗ Failed to merge {item.name}: {e}")
+                    if self.verbose:
+                        import traceback
+                        traceback.print_exc()
         
         if added_files:
             print(f"✓ Merged {len(added_files)} files")

@@ -52,6 +52,15 @@ references:
 
 当兼容性测试失败时，系统会按顺序尝试以下3个修复模式（从最轻量到最重）：
 
+**构建策略**：
+- **所有修复模式都使用 `--skip-output-check`**，避免 ldd 检查中断构建
+- `--skip-output-check` 的实际作用：
+  - **不会阻止 ldd 检查**：ldd 检查仍然会执行
+  - **仍然会生成 missing_deps.csv**：可以收集缺失依赖信息用于后续分析
+  - **只是不中断构建**：ldd 检查失败不会导致构建失败，但会作为警告显示
+- **兼容性测试才是真正的验证**：`ll-builder run` 运行时测试才是更真实的验证方式
+- 这样可以避免不必要的构建中断，保持一致性，同时仍然可以收集依赖信息
+
 #### 模式2：软链接（最轻量）
 
 扫描应用的 `files` 目录，在非标准目录中查找缺失的库，并创建软链接到 `files/lib` 目录。
@@ -118,13 +127,13 @@ Phase 4: 依赖修复尝试
     ↓
 第1次尝试：模式2（扫描非标准目录库，创建软链接）
     ↓ 失败
-Phase 5: 重建
+Phase 5: 重建 (ll-builder build --skip-output-check)
     ↓
 Phase 6: 兼容性测试
     ↓ 失败
 第2次尝试：模式0（追加运行时依赖 depends）
     ↓ 失败
-Phase 5: 重建
+Phase 5: 重建 (ll-builder build --skip-output-check)
     ↓
 Phase 6: 兼容性测试
     ↓ 失败
@@ -132,7 +141,7 @@ Phase 6: 兼容性测试
     ↓ 失败
 模式2: 扫描非标准目录库 (软链接)
     ↓
-Phase 5: 重建 (ll-builder build)
+Phase 5: 重建 (ll-builder build --skip-output-check)
     ↓
 Phase 6: 兼容性测试 (ll-builder run)
     ↓
@@ -149,8 +158,13 @@ Phase 8: 导出 Layer → 完成
 - **Phase 2** 使用 `--skip-output-check` 参数，避免因非必要库或插件导致构建失败
 - **Phase 3** 通过运行时测试验证应用是否能正常启动，这是更真实的验证方式
 - 只有当兼容性测试失败时才触发依赖修复流程，而不是基于构建退出码
-- **依赖修复按3个模式依次尝试**：模式0（最轻量）→ 模式1（中等）→ 模式2（最重）
-- 修复后的重建（Phase 5）使用标准构建，因为已经添加了必要的依赖
+- **依赖修复按3个模式依次尝试**：模式2（最轻量）→ 模式0（中等）→ 模式1（最重）
+- **所有修复模式都使用 `--skip-output-check`**，避免 ldd 检查中断构建
+- `--skip-output-check` 的实际作用：
+  - **不会阻止 ldd 检查**：ldd 检查仍然会执行
+  - **仍然会生成 missing_deps.csv**：可以收集缺失依赖信息用于后续分析
+  - **只是不中断构建**：ldd 检查失败不会导致构建失败，但会作为警告显示
+- **兼容性测试才是真正的验证**：`ll-builder run` 运行时测试才是更真实的验证方式
 
 #### 源码项目构建流程
 
@@ -380,15 +394,7 @@ Compat Check Status: passed
 Layer Export Status: passed
 ```
 
-Quiet 模式输出：
-```
-============================================================
-Final Status
-============================================================
-Build Status: passed
-Compat Check Status: passed
-Layer Export Status: passed
-```
+
 
 Verbose 模式输出：
 ```

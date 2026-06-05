@@ -104,6 +104,8 @@ class DebConverter:
         self.max_fix_attempts = 3
         self.fix_mode_used = None  # 记录使用的修复模式 (0/1/2)
         self.yaml_backed_up = False  # 标记是否已备份原始yaml
+        self.last_fix_failure_type = None  # 记录最后一次修复失败的类型 (BuildError/CompatCheckFailure)
+        self.last_fix_failure_msg = None  # 记录最后一次修复失败的消息
         
         # 初始化子模块
         self.compat_checker = CompatChecker(
@@ -495,19 +497,19 @@ class DebConverter:
         if not self.dependency_fixer.ensure_fresh_files_dir(self.app_build_dir / "files"):
             print("Warning: Failed to ensure fresh files directory, continuing anyway")
         
-        # 确保使用模板生成新的 yaml（从备份的 yaml 提取信息）
-        backup_yaml = self.app_build_dir / "linglong.yaml.original"
-        if backup_yaml.exists():
-            print("Regenerating linglong.yaml from template...")
-            yaml_regen_success = self._regenerate_yaml_from_backup()
-            if not yaml_regen_success:
-                print("Warning: Failed to regenerate linglong.yaml, continuing anyway")
-        
         # 根据尝试次数选择模式
         # 第1次尝试：模式2（最轻量）
         # 第2次尝试：模式0（中等）
         # 第3次尝试：模式1（最重）
-        mode = (self.fix_attempts - 1) % 3
+        mode = [2, 0, 1][self.fix_attempts - 1]
+        
+        # 先从备份 yaml 重新生成干净的 yaml（避免模式间的污染）
+        backup_yaml = self.app_build_dir / "linglong.yaml.original"
+        if backup_yaml.exists():
+            print(f"Regenerating clean linglong.yaml from backup (mode {mode})...")
+            yaml_regen_success = self._regenerate_yaml_from_backup()
+            if not yaml_regen_success:
+                print("Warning: Failed to regenerate linglong.yaml from backup, continuing anyway")
         
         # 执行依赖分析和修复（只尝试指定的模式）
         fix_success, fix_msg = self._analyze_and_fix_dependencies(mode=mode)
@@ -520,23 +522,39 @@ class DebConverter:
             # 否则，尝试下一个模式
             return self._attempt_dependency_fix()
         
-        # 修复成功后，重新生成 linglong.yaml
+        # 修复成功后，重新生成 linglong.yaml（添加当前模式的依赖）
         print("\nRegenerating linglong.yaml after fix...")
         yaml_regen_success = self._regenerate_yaml_after_fix(mode)
         if not yaml_regen_success:
             print("Warning: Failed to regenerate linglong.yaml, continuing anyway")
         
-        # 执行重建（使用标准构建，因为已经添加了依赖）
+        # 执行重建
+        # 所有修复模式都使用 --skip-output-check，避免 ldd 检查中断构建
+        # ldd 检查仍然会执行，missing_deps.csv 仍然会生成
+        # 兼容性测试（ll-builder run）才是真正的验证方式
+        skip_output_check = True
+        
         print("\n" + "=" * 60)
         print(f"Phase 5: Rebuild After Fix {self.fix_attempts}")
+        print("(Using --skip-output-check to avoid ldd check interruption)")
         print("=" * 60)
         print("# BUILD_START")
         
-        rebuild_success, rebuild_msg = self._execute_build(skip_output_check=False)
+        rebuild_success, rebuild_msg = self._execute_build(skip_output_check=skip_output_check)
         
         if not rebuild_success:
             print(f"\n✗ Rebuild failed: {rebuild_msg}")
+            print(f"  └─ Cause: Build Error (exit code 1)")
             print("# BUILD_END")
+            
+            # 记录失败类型
+            self.last_fix_failure_type = "BuildError"
+            self.last_fix_failure_msg = rebuild_msg
+            
+            # Mode 0 构建失败时不刷新 files 目录，避免污染
+            if self.fix_mode_used == 0:
+                print("\nNote: Mode 0 build failed, not updating files.tar.zst to avoid pollution")
+            
             # 如果是最后一次尝试，执行最终构建
             if self.fix_attempts >= self.max_fix_attempts:
                 return self._attempt_final_build()
@@ -562,6 +580,10 @@ class DebConverter:
                 return True, f"Build and compat check passed after {self.fix_attempts} fix attempt(s)"
             else:
                 print(f"\n✗ Compat check still failed: {check_msg}")
+                print(f"  └─ Cause: Compat Check Failure")
+                # 记录失败类型
+                self.last_fix_failure_type = "CompatCheckFailure"
+                self.last_fix_failure_msg = check_msg
                 # 尝试下一轮修复
                 print("# COMPAT_END")
                 return self._attempt_dependency_fix()
@@ -594,6 +616,14 @@ class DebConverter:
             return True, "Final build successful (compat check bypassed)"
         else:
             print(f"\n✗ Final build failed: {build_msg}")
+            print(f"  └─ Cause: Build Error (exit code 1)")
+            
+            # 即使构建失败，也尝试导出 layer 到 forceTested 目录
+            if self.enable_layer_export:
+                print("\n⚠ Warning: Attempting force layer export despite build failure")
+                self._export_layer()
+                self._store_layer()
+            
             return False, f"All fix attempts failed. Final error: {build_msg}"
     
     def _analyze_and_fix_dependencies(self, mode: int = 2) -> Tuple[bool, str]:
@@ -839,6 +869,9 @@ class DebConverter:
         """
         修复后重新生成 linglong.yaml
         
+        从备份 yaml 重新生成干净的 yaml，然后添加当前模式的依赖
+        这样可以避免模式间的污染
+        
         Args:
             mode: 修复模式
             
@@ -858,7 +891,7 @@ class DebConverter:
         
         if mode == 0:
             # 模式0：运行时依赖
-            # 从当前的 linglong.yaml 中读取 depends
+            # 从当前的 linglong.yaml 中读取 depends（由 _analyze_and_fix_dependencies 添加）
             import yaml
             with open(target_yaml, 'r', encoding='utf-8') as f:
                 manifest = yaml.safe_load(f)
@@ -868,7 +901,7 @@ class DebConverter:
         
         elif mode == 1:
             # 模式1：构建时依赖
-            # 从当前的 linglong.yaml 中读取 buildext.apt.depends
+            # 从当前的 linglong.yaml 中读取 buildext.apt.depends（由 _analyze_and_fix_dependencies 添加）
             import yaml
             with open(target_yaml, 'r', encoding='utf-8') as f:
                 manifest = yaml.safe_load(f)
@@ -876,7 +909,7 @@ class DebConverter:
             if isinstance(buildext_depends, str):
                 buildext_depends = [buildext_depends]
         
-        # 从备份的 yaml 生成新的 yaml
+        # 从备份的 yaml 生成新的 yaml（干净的 yaml）
         success = self.dependency_fixer._generate_rebuild_yaml(
             backup_yaml,
             target_yaml,
@@ -1089,6 +1122,10 @@ class DebConverter:
                     2: "Mode 2 (symlinks)"
                 }
                 print(f"Fix Mode Used: {mode_names.get(self.fix_mode_used, 'Unknown')}")
+            if self.last_fix_failure_type is not None:
+                print(f"Last Fix Failure Type: {self.last_fix_failure_type}")
+                if self.last_fix_failure_msg:
+                    print(f"Last Fix Failure Message: {self.last_fix_failure_msg}")
         print(f"Layer Export Status: {self.layer_export_status}")
         
         return True, "Conversion completed successfully"
