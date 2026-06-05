@@ -24,6 +24,7 @@ Deb conversion options:
   --final-missing-csv <path>   Path to final-missing CSV file for package info lookup
   --ll-stored-pool <dir>       Directory to store exported layers (default: ./StoredPool)
   --verbose                    Show verbose output
+  --quiet                      Show only final results
 
 AppImage conversion options:
   --id <appid>                 Application ID (required)
@@ -85,6 +86,7 @@ deb_convert() {
   local final_missing_csv="$6"
   local ll_stored_pool="$7"
   local verbose="$8"
+  local quiet="$9"
 
   # 设置默认值
   [ -n "${workdir}" ] || workdir="$(dirname "$(realpath "${deb_file}")")/pica-work"
@@ -120,6 +122,10 @@ deb_convert() {
 
   if [ "${verbose}" = "true" ]; then
     python_cmd+=(--verbose)
+  fi
+
+  if [ "${quiet}" = "true" ]; then
+    python_cmd+=(--quiet)
   fi
 
   # 执行转换
@@ -226,6 +232,7 @@ main() {
   # 通用参数
   workdir=""
   verbose="false"
+  quiet="false"
 
   # Deb 专用参数
   enable_compact_check="true"
@@ -255,6 +262,10 @@ main() {
         ;;
       --verbose)
         verbose="true"
+        shift
+        ;;
+      --quiet)
+        quiet="true"
         shift
         ;;
       --enable-compact-check)
@@ -353,7 +364,8 @@ main() {
         "${enable_layer_export}" \
         "${final_missing_csv}" \
         "${ll_stored_pool}" \
-        "${verbose}"
+        "${verbose}" \
+        "${quiet}"
       ;;
     appimage)
       if ! supports_modern_subcommand "appimage"; then
