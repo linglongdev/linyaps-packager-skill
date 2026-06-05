@@ -23,6 +23,8 @@ Deb conversion options:
   --no-layer-export            Disable layer export
   --final-missing-csv <path>   Path to final-missing CSV file for package info lookup
   --ll-stored-pool <dir>       Directory to store exported layers (default: ./StoredPool)
+  --missing-deps-strategy <strategy>  Strategy for handling missing deps when compat check passes (default: auto)
+                                         Options: auto, ask, force, ignore
   --verbose                    Show verbose output
   --quiet                      Show only final results
 
@@ -85,8 +87,9 @@ deb_convert() {
   local enable_layer_export="$5"
   local final_missing_csv="$6"
   local ll_stored_pool="$7"
-  local verbose="$8"
-  local quiet="$9"
+  local missing_deps_strategy="$8"
+  local verbose="$9"
+  local quiet="${10}"
 
   # 设置默认值
   [ -n "${workdir}" ] || workdir="$(dirname "$(realpath "${deb_file}")")/pica-work"
@@ -118,6 +121,10 @@ deb_convert() {
   # 添加可选参数
   if [ -n "${final_missing_csv}" ]; then
     python_cmd+=(--final-missing-csv "${final_missing_csv}")
+  fi
+
+  if [ -n "${missing_deps_strategy}" ]; then
+    python_cmd+=(--missing-deps-strategy "${missing_deps_strategy}")
   fi
 
   if [ "${verbose}" = "true" ]; then
@@ -240,6 +247,7 @@ main() {
   enable_layer_export="true"
   final_missing_csv=""
   ll_stored_pool=""
+  missing_deps_strategy="auto"
 
   # AppImage 专用参数
   app_id=""
@@ -294,6 +302,10 @@ main() {
         ;;
       --ll-stored-pool)
         ll_stored_pool="$2"
+        shift 2
+        ;;
+      --missing-deps-strategy)
+        missing_deps_strategy="$2"
         shift 2
         ;;
       --id)
@@ -364,6 +376,7 @@ main() {
         "${enable_layer_export}" \
         "${final_missing_csv}" \
         "${ll_stored_pool}" \
+        "${missing_deps_strategy}" \
         "${verbose}" \
         "${quiet}"
       ;;
