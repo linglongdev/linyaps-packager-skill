@@ -98,7 +98,7 @@ class CompatChecker:
     
     def get_status(self) -> str:
         """获取兼容性测试状态"""
-        return self.compact_checking_status
+        return self.compat_checking_status
     
     def get_error_log_path(self) -> Optional[Path]:
         """获取错误日志路径"""

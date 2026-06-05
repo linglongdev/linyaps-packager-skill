@@ -69,32 +69,69 @@ class DependencyAnalyzer:
         """
         if subprocess.run(["which", "apt-file"], capture_output=True).returncode != 0:
             print("✗ apt-file command not found")
-            print("  Please install binutils package: apt-get install apt-file")
-            print("  Then run: apt-file update")
+            print("  Please install apt-file package: apt-get install apt-file")
+            print("  Then run: sudo apt-file update")
             return False
         return True
     
+    def _check_apt_file_cache_age(self) -> Tuple[bool, int]:
+        """
+        检查 apt-file 缓存年龄
+        
+        Returns:
+            (缓存是否存在, 缓存年龄（天）)
+        """
+        try:
+            # 检查 apt-file 缓存目录
+            cache_dir = Path("/var/cache/apt/apt-file")
+            if not cache_dir.exists():
+                return False, 0
+            
+            # 查找最新的缓存文件
+            cache_files = list(cache_dir.glob("*.gz"))
+            if not cache_files:
+                return False, 0
+            
+            # 获取最新缓存文件的修改时间
+            latest_file = max(cache_files, key=lambda f: f.stat().st_mtime)
+            cache_age_days = (Path.cwd().stat().st_mtime - latest_file.stat().st_mtime) / 86400
+            
+            return True, int(cache_age_days)
+        except Exception as e:
+            if self.verbose:
+                print(f"Warning: Failed to check cache age: {e}")
+            return False, 0
+    
     def _update_apt_file_cache(self) -> bool:
         """
-        更新 apt-file 缓存
+        更新 apt-file 缓存（需要 root 权限）
         
         Returns:
             是否成功
         """
         try:
             print("Updating apt-file cache...")
-            subprocess.run(
+            result = subprocess.run(
                 ["apt-file", "update"],
-                check=True,
                 capture_output=not self.verbose,
                 timeout=300
             )
-            print("✓ apt-file cache updated")
-            return True
+            
+            if result.returncode == 0:
+                print("✓ apt-file cache updated")
+                return True
+            else:
+                print(f"✗ apt-file update failed with exit code {result.returncode}")
+                if result.stderr:
+                    print(f"  Error: {result.stderr.decode()}")
+                return False
         except subprocess.TimeoutExpired:
             print("✗ apt-file update timed out (5 minutes)")
             return False
-        except subprocess.CalledProcessError as e:
+        except FileNotFoundError:
+            print("✗ apt-file command not found")
+            return False
+        except Exception as e:
             print(f"✗ apt-file update failed: {e}")
             return False
     
@@ -151,7 +188,7 @@ class DependencyAnalyzer:
         
         Args:
             missing_deps_csv_path: missing_deps.csv 文件路径
-            force_update_cache: 是否强制更新缓存
+            force_update_cache: 是否强制更新缓存（需要 root 权限）
             
         Returns:
             (成功状态, 匹配的包列表)
@@ -166,10 +203,25 @@ class DependencyAnalyzer:
         if not self._check_apt_file():
             return False, []
         
-        # 更新 apt-file 缓存
+        # 检查 apt-file 缓存状态
+        cache_exists, cache_age_days = self._check_apt_file_cache_age()
+        
         if force_update_cache:
+            # 强制更新缓存
             if not self._update_apt_file_cache():
-                return False, []
+                print("  Warning: Failed to update cache, using existing cache if available")
+        else:
+            # 不强制更新，检查缓存状态并给出提示
+            if not cache_exists:
+                print("⚠ Warning: apt-file cache not found")
+                print("  Dependency analysis may not find all packages")
+                print("  To update the cache, run: sudo apt-file update")
+            elif cache_age_days > 7:
+                print(f"⚠ Warning: apt-file cache is {cache_age_days} days old")
+                print("  Dependency analysis may use outdated information")
+                print("  To update the cache, run: sudo apt-file update")
+            else:
+                print(f"✓ Using apt-file cache ({cache_age_days} days old)")
         
         # 检查 missing_deps.csv 文件
         if not missing_deps_csv_path.exists():
@@ -207,6 +259,8 @@ class DependencyAnalyzer:
                 print(f"    - {pkg}")
         else:
             print("  No packages found")
+            if not cache_exists or cache_age_days > 7:
+                print("  Tip: Try updating apt-file cache with: sudo apt-file update")
         
         return True, self.matched_packages
     

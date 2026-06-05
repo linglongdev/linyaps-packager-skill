@@ -18,9 +18,11 @@ references:
 
 - 源码项目入口：`scripts/build_from_project.py`
 - 包格式转换入口：`scripts/convert_package.sh`
+- Deb 包转换器：`scripts/deb_converter.py`
 - 源码项目打包说明：`references/project-build-workflow.md`
 - `ll-pica` 转换说明：`references/pica-convert-workflow.md`
 - base/runtime 包列表参考：`references/runtime.md`
+- 兼容性测试工作流：`references/compatibility-check-workflow.md`
 - `linglong.yaml` 模板：`templates/simple.yaml`
 - 字段结构参考：`resources/linglong-schemas.json`
 - 兼容性测试模块：`scripts/compat_checker.py`
@@ -48,6 +50,44 @@ references:
 
 ### 工作流程
 
+#### Deb 包转换完整流程
+
+```
+Phase 1: ll-pica convert
+    ↓
+Phase 2: 初始构建 (ll-builder build --skip-output-check)
+    ↓
+Phase 3: 兼容性测试 (ll-builder run)
+    ↓
+检测失败？ → 否：Phase 7: 导出 Layer → 完成
+    ↓ 是
+Phase 4: 依赖修复尝试
+    ↓
+分析缺失依赖 (apt-file)
+    ↓
+下载并安装依赖 或 扫描非标准目录库
+    ↓
+Phase 5: 重建 (ll-builder build)
+    ↓
+Phase 6: 兼容性测试 (ll-builder run)
+    ↓
+检测失败？ → 否：Phase 7: 导出 Layer → 完成
+    ↓ 是
+修复次数 < 3？ → 是：返回 Phase 4
+    ↓ 否
+Phase 7: 最终构建 (ll-builder build --skip-output-check)
+    ↓
+Phase 8: 导出 Layer → 完成
+```
+
+**关键改进**：
+- **Phase 2** 使用 `--skip-output-check` 参数，避免因非必要库或插件导致构建失败
+- **Phase 3** 通过运行时测试验证应用是否能正常启动，这是更真实的验证方式
+- 只有当兼容性测试失败时才触发依赖修复流程，而不是基于构建退出码
+- 修复后的重建（Phase 5）使用标准构建，因为已经添加了必要的依赖
+
+#### 源码项目构建流程
+
 ```
 构建 → 兼容性测试 → 检测失败？ → 否：完成
                     ↓ 是
@@ -66,20 +106,32 @@ references:
 
 ### 使用参数
 
-- `--enable-compat-check`：启用兼容性测试（默认启用）
-- `--no-compat-check`：禁用兼容性测试
-- `--compat-check-timeout <seconds>`：兼容性测试超时时间（默认 30 秒）
-- `--max-fix-attempts <number>`：最大修复尝试次数（默认 3 次）
+- `--enable-compact-check`：启用兼容性测试（默认启用）
+- `--no-compact-check`：禁用兼容性测试
+- `--compact-check-timeout <seconds>`：兼容性测试超时时间（默认 30 秒）
+- `--enable-layer-export`：启用 layer 导出（默认启用）
+- `--no-layer-export`：禁用 layer 导出
+- `--final-missing-csv <path>`：final-missing CSV 文件路径（用于包信息查找）
+- `--ll-stored-pool <dir>`：layer 存储目录（默认：./StoredPool）
+- `--verbose`：显示详细输出
 
 ### 前置要求
+
+#### 兼容性测试和依赖修复
 
 使用兼容性测试和依赖修复功能需要：
 
 1. **apt-file**：用于分析缺失依赖
    ```bash
    apt-get install apt-file
-   apt-file update
+   # 更新缓存（需要 root 权限）
+   sudo apt-file update
    ```
+   **注意**：
+   - apt-file 可以作为普通用户使用，基于现有数据库进行索引搜索
+   - apt-file 缓存不需要实时更新，旧数据也可以用于索引
+   - 如果缓存不存在或过旧，依赖分析会显示警告提示
+   - 要更新 apt-file 缓存，需要 root 权限：`sudo apt-file update`
 
 2. **apt-get**：用于下载依赖包
    ```bash
@@ -88,15 +140,77 @@ references:
 
 3. **zstd**：用于处理 files.tar.zst 归档（可选，不安装时会使用 Python 实现）
 
+#### Deb 包转换
+
+使用 Deb 包转换功能需要：
+
+1. **ll-pica**：用于 deb 包转换
+   ```bash
+   apt-get install linglong-pica
+   ```
+
+2. **ll-builder**：用于构建和测试
+   ```bash
+   apt-get install linglong-builder
+   ```
+
+3. **Python 3**：用于运行 deb_converter.py
+   ```bash
+   apt-get install python3 python3-pip
+   ```
+
+4. **PyYAML**：用于处理 linglong.yaml
+   ```bash
+   pip3 install pyyaml
+   ```
+
 ### 命令示例
 
-启用紧凑检查和自动修复：
+#### Deb 包转换
+
+启用兼容性测试和 layer 导出：
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb \
+  --workdir /tmp/pica-work \
+  --enable-compact-check \
+  --enable-layer-export
+```
+
+禁用兼容性测试：
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb \
+  --workdir /tmp/pica-work \
+  --no-compact-check
+```
+
+自定义兼容性测试超时时间：
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb \
+  --workdir /tmp/pica-work \
+  --compact-check-timeout 60
+```
+
+使用 final-missing CSV 文件更新包信息：
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb \
+  --workdir /tmp/pica-work \
+  --final-missing-csv /path/to/final-missing.csv \
+  --ll-stored-pool /path/to/StoredPool
+```
+
+#### 源码项目构建
+
+启用兼容性测试和自动修复：
 
 ```bash
 python3 scripts/build_from_project.py \
   --input /path/to/project \
   --workdir /tmp/linglong-build \
-  --enable-compat-check
+  --enable-compact-check
 ```
 
 禁用兼容性测试：
@@ -105,7 +219,7 @@ python3 scripts/build_from_project.py \
 python3 scripts/build_from_project.py \
   --input /path/to/project \
   --workdir /tmp/linglong-build \
-  --no-compat-check
+  --no-compact-check
 ```
 
 自定义兼容性测试超时时间：
@@ -114,10 +228,12 @@ python3 scripts/build_from_project.py \
 python3 scripts/build_from_project.py \
   --input /path/to/project \
   --workdir /tmp/linglong-build \
-  --compat-check-timeout 60
+  --compact-check-timeout 60
 ```
 
 ### 输出文件
+
+#### Deb 包转换输出文件
 
 构建流程会生成以下文件：
 
@@ -126,15 +242,38 @@ python3 scripts/build_from_project.py \
 - `nonStrDir_found_libs.csv`：在非标准目录中找到的库
 - `files.tar.zst`：应用文件的压缩归档（使用 zstd 压缩）
 - `compat-check-errors/run-error.log`：兼容性测试错误日志
+- `*_binary.layer`：导出的 layer 文件（如果启用 layer 导出）
+
+#### Layer 存储位置
+
+- 如果兼容性测试通过：存储在 `--ll-stored-pool` 指定的目录（默认：./StoredPool）
+- 如果兼容性测试未执行或失败：存储在 `--ll-stored-pool/forceTested` 目录
 
 ### 注意事项
 
+#### 兼容性测试和依赖修复
+
 - 兼容性测试使用 `ll-builder run` 命令，默认 30 秒超时
 - 超时（退出码 124）被视为检查通过，因为应用已成功启动
-- 依赖分析需要网络连接以查询 apt-file 缓存
+- **apt-file 使用说明**：
+  - apt-file 可以作为普通用户使用，基于现有数据库进行索引搜索
+  - apt-file 缓存不需要实时更新，旧数据也可以用于索引
+  - 如果缓存不存在或过旧（超过 7 天），会显示警告提示
+  - 要更新 apt-file 缓存，需要 root 权限：`sudo apt-file update`
+  - 依赖分析会自动检测缓存状态并给出相应提示
 - 依赖修复会修改 `linglong.yaml`，添加 `buildext.apt.depends` 段
 - 如果超过最大修复次数仍未成功，会执行最终构建（跳过输出检查）
-- 构建失败（退出码 255）通常表示依赖问题，会触发自动修复流程
+- **第一次构建使用 `--skip-output-check`**，避免因非必要库或插件导致构建失败
+- **只有兼容性测试失败时才触发依赖修复**，而不是基于构建退出码
+- 修复后的重建使用标准构建，因为已经添加了必要的依赖
+
+#### Deb 包转换
+
+- Deb 包转换使用内置的 `deb_converter.py` 脚本，不直接调用 `ll-pica deb convert`
+- 转换流程包含完整的兼容性测试和依赖修复功能
+- 支持通过 `--final-missing-csv` 参数更新包的 ID 和名称
+- Layer 文件会根据兼容性测试结果存储到不同目录
+- AppImage 和 Flatpak 转换仍使用 `ll-pica` 的对应子命令
 
 ## 快速上手
 
@@ -161,11 +300,58 @@ ll-builder export --ref <selected-ref>
 
 ### 2. 转换 deb、AppImage 或 Flatpak
 
+#### Deb 包转换
+
+Deb 包转换使用内置的 `deb_converter.py` 脚本，提供完整的兼容性测试和依赖修复功能：
+
 ```bash
-bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work --build
+bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work
+```
+
+**Deb 转换选项**：
+- `--workdir <dir>`：工作目录（默认：./pica-work）
+- `--enable-compact-check`：启用兼容性测试（默认启用）
+- `--no-compact-check`：禁用兼容性测试
+- `--compact-check-timeout <s>`：兼容性测试超时时间（默认 30 秒）
+- `--enable-layer-export`：启用 layer 导出（默认启用）
+- `--no-layer-export`：禁用 layer 导出
+- `--final-missing-csv <path>`：final-missing CSV 文件路径（用于包信息查找）
+- `--ll-stored-pool <dir>`：layer 存储目录（默认：./StoredPool）
+- `--verbose`：显示详细输出
+
+**Deb 转换工作流程**：
+1. **Phase 1**: 执行 `ll-pica convert` 转换 deb 包
+2. **Phase 2**: 执行 `ll-builder build` 初始构建
+3. **Phase 3**: 执行 `ll-builder run` 兼容性测试
+4. **Phase 4-6**: 如果测试失败，自动分析和修复依赖（最多 3 次尝试）
+5. **Phase 7**: 导出 layer 文件到存储目录
+
+#### AppImage 转换
+
+```bash
 bash scripts/convert_package.sh appimage ./demo.AppImage --id io.github.demo.app --version 1.0.0.0 --build
+```
+
+**AppImage 转换选项**：
+- `--id <appid>`：应用 ID（必需）
+- `--version <ver>`：版本（必需）
+- `--name <name>`：应用名称
+- `--description <text>`：描述
+- `--workdir <dir>`：工作目录
+- `--build`：转换后构建
+
+#### Flatpak 转换
+
+```bash
 bash scripts/convert_package.sh flatpak org.kde.kate --build
 ```
+
+**Flatpak 转换选项**：
+- `--base <base>`：基础包
+- `--base-version <ver>`：基础包版本
+- `--version <ver>`：版本
+- `--build`：转换后构建
+- `--layer`：导出 layer
 
 ## 执行原则
 

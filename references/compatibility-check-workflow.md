@@ -374,7 +374,13 @@ rebuild
 | `--enable-compact-check` | 启用兼容性测试 | 默认启用 |
 | `--no-compact-check` | 禁用兼容性测试 | - |
 | `--compact-check-timeout` | 兼容性测试超时时间（秒） | 30 |
-| `--max-fix-attempts` | 最大修复尝试次数 | 3 |
+| `--enable-layer-export` | 启用 layer 导出 | 默认启用 |
+| `--no-layer-export` | 禁用 layer 导出 | - |
+| `--final-missing-csv` | final-missing CSV 文件路径 | - |
+| `--ll-stored-pool` | layer 存储目录 | ./StoredPool |
+| `--verbose` | 显示详细输出 | - |
+
+**注意**：最大修复尝试次数（3次）在代码中硬编码，不可通过命令行参数配置。
 
 ### 环境变量
 
