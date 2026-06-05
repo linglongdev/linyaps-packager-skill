@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2023 UnionTech Software Technology Co., Ltd.
+#
+# SPDX-License-Identifier: LGPL-3.0-or-later
+
+version: "${orig_yaml_version}"
+
+package:
+  id: ${orig_yaml_id}
+  name: "${orig_yaml_name}"
+  version: ${orig_yaml_version}
+  kind: app
+  description: |
+    ${orig_yaml_description}
+
+base: ${orig_yaml_base}
+runtime: ${orig_yaml_runtime}
+
+command:
+  - ${orig_yaml_command}
+
+source:
+  - kind: local
+    name: "${orig_yaml_name}"
+
+build: |
+  ##Extract res
+  cp -rf /project/files/* $PREFIX/

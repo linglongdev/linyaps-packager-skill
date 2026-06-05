@@ -78,6 +78,23 @@ references:
 
 **修复流程**：每次修复尝试只尝试一个模式，按顺序：模式2 → 模式0 → 模式1。每次修复后都会重建并重新测试，最多尝试3次（对应3个模式）。
 
+**技术实现细节**：
+- **第一次构建成功后**：自动备份原始的 `linglong.yaml` 到 `linglong.yaml.original`
+- **每次修复前**：从备份的yaml提取信息，使用模板生成新的yaml
+- **每次修复前**：从 `files.tar.zst` 解压 `files` 目录，确保使用最新的文件
+- **build区域**：始终使用模板中的固定内容 `cp -rf /project/files/* $PREFIX/`，确保构建一致性
+- **source区域**：始终使用模板中的固定内容 `kind: local, name: "${orig_yaml_name}"`，确保源码引用正确
+- **yaml生成**：使用 skill 的 `templates/linglong-rebuild.yaml` 或 `templates/linglong-rebuild-WithoutRuntime.yaml` 模板
+- **变量替换**：使用字符串替换方式（与 pica-helper 的 envsubst 效果相同），替换以下变量：
+  - `${orig_yaml_version}`：包版本
+  - `${orig_yaml_id}`：包 ID
+  - `${orig_yaml_name}`：包名称
+  - `${orig_yaml_description}`：包描述
+  - `${orig_yaml_base}`：基础包
+  - `${orig_yaml_runtime}`：运行时包（可选）
+  - `${orig_yaml_command}`：启动命令
+- **模板路径**：模板文件位于 skill 的 `templates/` 目录，确保生成的 yaml 使用模板中的固定 build 和 source 模块，而不是继承原始 yaml 的内容
+
 ### 工作流程
 
 #### Deb 包转换完整流程
@@ -87,11 +104,17 @@ Phase 1: ll-pica convert
     ↓
 Phase 2: 初始构建 (ll-builder build --skip-output-check)
     ↓
+    备份原始 linglong.yaml 到 linglong.yaml.original
+    ↓
 Phase 3: 兼容性测试 (ll-builder run)
     ↓
 检测失败？ → 否：Phase 7: 导出 Layer → 完成
     ↓ 是
 Phase 4: 依赖修复尝试
+    ↓
+    从 files.tar.zst 解压 files 目录（确保使用最新文件）
+    ↓
+    从备份的 yaml 提取信息，使用模板生成新的 yaml
     ↓
 第1次尝试：模式2（扫描非标准目录库，创建软链接）
     ↓ 失败
@@ -156,6 +179,11 @@ Phase 8: 导出 Layer → 完成
 - `--no-layer-export`：禁用 layer 导出
 - `--final-missing-csv <path>`：final-missing CSV 文件路径（用于包信息查找）
 - `--ll-stored-pool <dir>`：layer 存储目录（默认：./StoredPool）
+- `--missing-deps-strategy <strategy>`：兼容性测试通过但存在缺失依赖时的处理策略（默认：auto）
+  - `auto`：只在兼容性测试失败时触发修复（保持向后兼容）
+  - `ask`：询问用户是否触发修复
+  - `force`：只要有缺失依赖就触发修复（无论兼容性测试结果）
+  - `ignore`：忽略缺失依赖，只在兼容性测试失败时触发修复
 - `--verbose`：显示详细输出
 - `--quiet`：只显示最终结果（适合脚本自动化）
 
@@ -244,6 +272,30 @@ bash scripts/convert_package.sh deb ./demo.deb \
   --workdir /tmp/pica-work \
   --final-missing-csv /path/to/final-missing.csv \
   --ll-stored-pool /path/to/StoredPool
+```
+
+询问用户是否修复缺失依赖（适用于有可选 GUI 功能的程序）：
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb \
+  --workdir /tmp/pica-work \
+  --missing-deps-strategy ask
+```
+
+强制修复缺失依赖（即使兼容性测试通过）：
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb \
+  --workdir /tmp/pica-work \
+  --missing-deps-strategy force
+```
+
+忽略缺失依赖（只在兼容性测试失败时触发修复）：
+
+```bash
+bash scripts/convert_package.sh deb ./demo.deb \
+  --workdir /tmp/pica-work \
+  --missing-deps-strategy ignore
 ```
 
 #### 源码项目构建
@@ -380,6 +432,7 @@ Layer Export Status: passed
 - `missing-libs.packages`：匹配的包列表（由 apt-file 分析）
 - `nonStrDir_found_libs.csv`：在非标准目录中找到的库
 - `files.tar.zst`：应用文件的压缩归档（使用 zstd 压缩）
+- `linglong.yaml.original`：第一次构建成功后备份的原始yaml文件
 - `compat-check-errors/run-error.log`：兼容性测试错误日志
 - `*_binary.layer`：导出的 layer 文件（如果启用 layer 导出）
 
@@ -405,6 +458,19 @@ Layer Export Status: passed
 - **第一次构建使用 `--skip-output-check`**，避免因非必要库或插件导致构建失败
 - **只有兼容性测试失败时才触发依赖修复**，而不是基于构建退出码
 - 修复后的重建使用标准构建，因为已经添加了必要的依赖
+- **`--missing-deps-strategy` 参数的使用场景**：
+  - 适用于有可选 GUI 功能的程序，CLI 可以正常启动，但 GUI 功能可能缺失依赖
+  - `auto`（默认）：只在兼容性测试失败时触发修复，保持向后兼容
+  - `ask`：在兼容性测试通过但有缺失依赖时询问用户，适合需要用户决策的场景
+  - `force`：只要有缺失依赖就触发修复，适合需要确保所有功能可用的场景
+  - `ignore`：忽略缺失依赖，只在兼容性测试失败时触发修复，适合只需要基本功能的场景
+  - 在 `quiet` 模式下，`ask` 策略会自动降级为 `auto` 策略，避免交互
+
+- **yaml备份机制**：
+  - 第一次构建成功后，会自动备份原始的 `linglong.yaml` 到 `linglong.yaml.original`
+  - 每次修复前，会从备份的yaml提取信息，使用模板生成新的yaml
+  - 这确保了每次修复都使用干净的yaml模板，build区域始终是固定的 `cp -rf /project/files/* $PREFIX/`
+  - 如果需要恢复原始yaml，可以从 `linglong.yaml.original` 复制
 
 #### Deb 包转换
 
@@ -462,8 +528,12 @@ bash scripts/convert_package.sh deb ./demo.deb --workdir /tmp/pica-work
 **Deb 转换工作流程**：
 1. **Phase 1**: 执行 `ll-pica convert` 转换 deb 包
 2. **Phase 2**: 执行 `ll-builder build` 初始构建
+   - 构建成功后备份原始 `linglong.yaml` 到 `linglong.yaml.original`
 3. **Phase 3**: 执行 `ll-builder run` 兼容性测试
 4. **Phase 4-6**: 如果测试失败，自动分析和修复依赖（最多 3 次尝试）
+   - 每次修复前从 `files.tar.zst` 解压 `files` 目录
+   - 每次修复前从备份的yaml生成新的yaml
+   - 确保build区域始终是 `cp -rf /project/files/* $PREFIX/`
 5. **Phase 7**: 导出 layer 文件到存储目录
 
 #### AppImage 转换

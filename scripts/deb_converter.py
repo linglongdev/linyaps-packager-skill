@@ -50,6 +50,7 @@ class DebConverter:
         enable_layer_export: bool = True,
         ll_stored_pool: Optional[Path] = None,
         final_missing_csv: Optional[Path] = None,
+        missing_deps_strategy: str = 'auto',
         verbose: bool = False,
         quiet: bool = False
     ):
@@ -64,6 +65,7 @@ class DebConverter:
             enable_layer_export: 是否启用 layer 导出
             ll_stored_pool: layer 存储目录
             final_missing_csv: final-missing CSV 文件路径
+            missing_deps_strategy: 兼容性测试通过但存在缺失依赖时的处理策略
             verbose: 是否显示详细输出
             quiet: 是否只显示最终结果
         """
@@ -74,6 +76,7 @@ class DebConverter:
         self.enable_layer_export = enable_layer_export
         self.ll_stored_pool = Path(ll_stored_pool).resolve() if ll_stored_pool else None
         self.final_missing_csv = Path(final_missing_csv).resolve() if final_missing_csv else None
+        self.missing_deps_strategy = missing_deps_strategy
         self.verbose = verbose
         self.quiet = quiet
         
@@ -100,6 +103,7 @@ class DebConverter:
         self.fix_attempts = 0
         self.max_fix_attempts = 3
         self.fix_mode_used = None  # 记录使用的修复模式 (0/1/2)
+        self.yaml_backed_up = False  # 标记是否已备份原始yaml
         
         # 初始化子模块
         self.compat_checker = CompatChecker(
@@ -396,6 +400,9 @@ class DebConverter:
                 # 更新 files.tar.zst 归档
                 self._update_files_tar()
                 
+                # 第一次构建成功后，备份原始的 linglong.yaml
+                self._backup_original_yaml()
+                
                 return True, "Build successful"
             else:
                 self.build_status = "failed"
@@ -423,6 +430,25 @@ class DebConverter:
             self.build_status = "error"
             print(f"✗ Build error: {e}")
             return False, f"Build error: {e}"
+    
+    def _backup_original_yaml(self) -> None:
+        """
+        备份原始的 linglong.yaml
+        
+        只在第一次构建成功后执行一次
+        """
+        original_yaml = self.app_build_dir / "linglong.yaml"
+        backup_yaml = self.app_build_dir / "linglong.yaml.original"
+        
+        # 如果备份已存在，跳过
+        if backup_yaml.exists():
+            return
+        
+        # 备份原始yaml
+        if original_yaml.exists():
+            shutil.copy(original_yaml, backup_yaml)
+            self.yaml_backed_up = True
+            print(f"✓ Backed up original linglong.yaml to {backup_yaml}")
     
     def _update_files_tar(self) -> bool:
         """
@@ -464,6 +490,19 @@ class DebConverter:
             print(f"\n✗ Exceeded maximum fix attempts ({self.max_fix_attempts})")
             return False, "Exceeded maximum fix attempts"
         
+        # 确保使用最新的 files 目录（从最新的 files.tar.zst 重新解压）
+        print("Ensuring fresh files directory from latest files.tar.zst...")
+        if not self.dependency_fixer.ensure_fresh_files_dir(self.app_build_dir / "files"):
+            print("Warning: Failed to ensure fresh files directory, continuing anyway")
+        
+        # 确保使用模板生成新的 yaml（从备份的 yaml 提取信息）
+        backup_yaml = self.app_build_dir / "linglong.yaml.original"
+        if backup_yaml.exists():
+            print("Regenerating linglong.yaml from template...")
+            yaml_regen_success = self._regenerate_yaml_from_backup()
+            if not yaml_regen_success:
+                print("Warning: Failed to regenerate linglong.yaml, continuing anyway")
+        
         # 根据尝试次数选择模式
         # 第1次尝试：模式2（最轻量）
         # 第2次尝试：模式0（中等）
@@ -480,6 +519,12 @@ class DebConverter:
                 return self._attempt_final_build()
             # 否则，尝试下一个模式
             return self._attempt_dependency_fix()
+        
+        # 修复成功后，重新生成 linglong.yaml
+        print("\nRegenerating linglong.yaml after fix...")
+        yaml_regen_success = self._regenerate_yaml_after_fix(mode)
+        if not yaml_regen_success:
+            print("Warning: Failed to regenerate linglong.yaml, continuing anyway")
         
         # 执行重建（使用标准构建，因为已经添加了依赖）
         print("\n" + "=" * 60)
@@ -763,6 +808,88 @@ class DebConverter:
             print(f"✗ Failed to update linglong.yaml: {e}")
             return False
     
+    def _regenerate_yaml_from_backup(self) -> bool:
+        """
+        从备份的 yaml 重新生成 linglong.yaml
+        
+        Returns:
+            是否成功
+        """
+        backup_yaml = self.app_build_dir / "linglong.yaml.original"
+        target_yaml = self.app_build_dir / "linglong.yaml"
+        
+        if not backup_yaml.exists():
+            print(f"✗ Backup yaml not found: {backup_yaml}")
+            return False
+        
+        # 生成新的 yaml（不添加任何依赖）
+        success = self.dependency_fixer._generate_rebuild_yaml(
+            backup_yaml,
+            target_yaml,
+            depends=None,
+            buildext_depends=None
+        )
+        
+        if success:
+            print(f"✓ Regenerated linglong.yaml from backup")
+        
+        return success
+    
+    def _regenerate_yaml_after_fix(self, mode: int) -> bool:
+        """
+        修复后重新生成 linglong.yaml
+        
+        Args:
+            mode: 修复模式
+            
+        Returns:
+            是否成功
+        """
+        backup_yaml = self.app_build_dir / "linglong.yaml.original"
+        target_yaml = self.app_build_dir / "linglong.yaml"
+        
+        if not backup_yaml.exists():
+            print(f"✗ Backup yaml not found: {backup_yaml}")
+            return False
+        
+        # 根据模式确定依赖
+        depends = None
+        buildext_depends = None
+        
+        if mode == 0:
+            # 模式0：运行时依赖
+            # 从当前的 linglong.yaml 中读取 depends
+            import yaml
+            with open(target_yaml, 'r', encoding='utf-8') as f:
+                manifest = yaml.safe_load(f)
+            depends = manifest.get('depends', [])
+            if isinstance(depends, str):
+                depends = [depends]
+        
+        elif mode == 1:
+            # 模式1：构建时依赖
+            # 从当前的 linglong.yaml 中读取 buildext.apt.depends
+            import yaml
+            with open(target_yaml, 'r', encoding='utf-8') as f:
+                manifest = yaml.safe_load(f)
+            buildext_depends = manifest.get('buildext', {}).get('apt', {}).get('depends', [])
+            if isinstance(buildext_depends, str):
+                buildext_depends = [buildext_depends]
+        
+        # 从备份的 yaml 生成新的 yaml
+        success = self.dependency_fixer._generate_rebuild_yaml(
+            backup_yaml,
+            target_yaml,
+            depends=depends,
+            buildext_depends=buildext_depends
+        )
+        
+        if success:
+            print(f"✓ Regenerated linglong.yaml (mode {mode})")
+            return True
+        else:
+            return False
+    
     def _export_layer(self) -> bool:
         """
         导出 layer
@@ -907,6 +1034,31 @@ class DebConverter:
             
             if check_success:
                 self._print(f"\n✓ Compat check passed: {check_msg}", "normal")
+                
+                # 检查是否存在缺失依赖
+                missing_deps = self._check_missing_deps()
+                if missing_deps:
+                    self._print(f"\n⚠ Found {len(missing_deps)} missing dependencies:", "normal")
+                    for lib in missing_deps[:5]:  # 只显示前 5 个
+                        self._print(f"  - {lib}", "normal")
+                    if len(missing_deps) > 5:
+                        self._print(f"  ... and {len(missing_deps) - 5} more", "normal")
+                    
+                    # 根据策略决定是否触发修复
+                    if self.missing_deps_strategy == 'force':
+                        self._print("\nStrategy: force - triggering dependency fix", "normal")
+                        print("# COMPAT_END")
+                        return self._attempt_dependency_fix()
+                    elif self.missing_deps_strategy == 'ask':
+                        self._print("\nStrategy: ask - asking user for decision", "normal")
+                        print("# COMPAT_END")
+                        return self._ask_user_for_fix_strategy(missing_deps)
+                    elif self.missing_deps_strategy == 'ignore':
+                        self._print("\nStrategy: ignore - skipping dependency fix", "normal")
+                    else:  # auto
+                        self._print("\nStrategy: auto - skipping dependency fix (compat check passed)", "normal")
+                else:
+                    self._print("\n✓ No missing dependencies detected", "normal")
             else:
                 self._print(f"\n✗ Compat check failed: {check_msg}", "normal")
                 # 兼容性测试失败，触发依赖修复流程
@@ -956,6 +1108,126 @@ class DebConverter:
     def get_fix_attempts(self) -> int:
         """获取修复尝试次数"""
         return self.fix_attempts
+    
+    def _check_missing_deps(self) -> List[str]:
+        """
+        检查是否存在缺失依赖
+        
+        Returns:
+            缺失的依赖列表（库名）
+        """
+        missing_deps_csv = self.app_build_dir / "missing_deps.csv"
+        
+        if not missing_deps_csv.exists():
+            return []
+        
+        try:
+            with open(missing_deps_csv, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # 跳过表头
+            missing_libs = []
+            for line in lines[1:]:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # CSV 格式：library_name, file_path
+                parts = line.split(',')
+                if len(parts) >= 1:
+                    lib = parts[0].strip()
+                    if lib and ".so" in lib:
+                        missing_libs.append(lib)
+            
+            return missing_libs
+            
+        except Exception as e:
+            self._print(f"Warning: Failed to read missing_deps.csv: {e}", "normal")
+            return []
+    
+    def _ask_user_for_fix_strategy(self, missing_deps: List[str]) -> Tuple[bool, str]:
+        """
+        询问用户是否触发依赖修复
+        
+        Args:
+            missing_deps: 缺失的依赖列表
+        
+        Returns:
+            (是否触发修复, 状态描述)
+        """
+        # 在 quiet 模式下，自动降级为 auto 策略
+        if self.quiet:
+            self._print("\nQuiet mode: auto strategy - skipping dependency fix", "normal")
+            return True, "Conversion completed successfully (missing deps ignored in quiet mode)"
+        
+        print("\n" + "=" * 60)
+        print("Missing Dependencies Detected")
+        print("=" * 60)
+        print(f"\nFound {len(missing_deps)} missing dependencies:")
+        for i, lib in enumerate(missing_deps[:10], 1):
+            print(f"  {i}. {lib}")
+        if len(missing_deps) > 10:
+            print(f"  ... and {len(missing_deps) - 10} more")
+        
+        print("\nOptions:")
+        print("  [Y] Trigger dependency fix (attempt to fix missing dependencies)")
+        print("  [N] Skip dependency fix (continue with current build)")
+        print("  [D] Show detailed information about missing dependencies")
+        print("\nDefault: N (skip)")
+        
+        while True:
+            try:
+                choice = input("\nYour choice [Y/N/D]: ").strip().upper()
+                
+                if not choice or choice == 'N':
+                    self._print("\nSkipping dependency fix", "normal")
+                    return True, "Conversion completed successfully (user chose to skip fix)"
+                elif choice == 'Y':
+                    self._print("\nTriggering dependency fix", "normal")
+                    return self._attempt_dependency_fix()
+                elif choice == 'D':
+                    self._show_missing_deps_details()
+                    # 继续循环，让用户再次选择
+                else:
+                    print("Invalid choice. Please enter Y, N, or D.")
+            except (EOFError, KeyboardInterrupt):
+                # 用户中断输入，默认跳过
+                print("\n")
+                self._print("\nSkipping dependency fix (user interrupted)", "normal")
+                return True, "Conversion completed successfully (user interrupted)"
+    
+    def _show_missing_deps_details(self) -> None:
+        """
+        显示详细的缺失依赖信息
+        """
+        missing_deps_csv = self.app_build_dir / "missing_deps.csv"
+        
+        if not missing_deps_csv.exists():
+            print("No missing_deps.csv file found")
+            return
+        
+        try:
+            with open(missing_deps_csv, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            print("\n" + "=" * 60)
+            print("Detailed Missing Dependencies Information")
+            print("=" * 60)
+            
+            # 显示表头
+            if lines:
+                print(f"\n{lines[0].strip()}")
+            
+            # 显示所有缺失依赖
+            for line in lines[1:]:
+                line = line.strip()
+                if line:
+                    print(line)
+            
+            print("\n" + "=" * 60)
+            
+        except Exception as e:
+            print(f"Error reading missing_deps.csv: {e}")
 
 
 def main():
@@ -1025,6 +1297,14 @@ def main():
     )
     
     parser.add_argument(
+        "--missing-deps-strategy",
+        type=str,
+        choices=['auto', 'ask', 'force', 'ignore'],
+        default='auto',
+        help="兼容性测试通过但存在缺失依赖时的处理策略（默认：auto）"
+    )
+    
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="显示详细输出"
@@ -1051,6 +1331,7 @@ def main():
         enable_layer_export=enable_layer_export,
         ll_stored_pool=Path(args.ll_stored_pool) if args.ll_stored_pool else None,
         final_missing_csv=Path(args.final_missing_csv) if args.final_missing_csv else None,
+        missing_deps_strategy=args.missing_deps_strategy,
         verbose=args.verbose,
         quiet=args.quiet
     )

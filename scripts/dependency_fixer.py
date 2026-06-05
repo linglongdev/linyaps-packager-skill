@@ -29,6 +29,170 @@ class DependencyFixer:
         self.files_tar = self.build_dir / "files.tar.zst"
         self.missing_deps_csv = self.build_dir / "missing_deps.csv"
         
+    def _extract_yaml_info(self, yaml_file: Path) -> dict:
+        """
+        提取 linglong.yaml 的信息
+        
+        Args:
+            yaml_file: yaml 文件路径
+            
+        Returns:
+            包含 yaml 信息的字典
+        """
+        import yaml
+        
+        yaml_info = {
+            'id': '',
+            'name': '',
+            'version': '',
+            'kind': '',
+            'description': '',
+            'base': '',
+            'runtime': '',
+            'command': ''
+        }
+        
+        if not yaml_file.exists():
+            return yaml_info
+        
+        try:
+            with open(yaml_file, 'r', encoding='utf-8') as f:
+                manifest = yaml.safe_load(f)
+            
+            # 提取 package 信息
+            if 'package' in manifest:
+                pkg = manifest['package']
+                yaml_info['id'] = pkg.get('id', '')
+                yaml_info['name'] = pkg.get('name', '')
+                yaml_info['version'] = pkg.get('version', '')
+                yaml_info['kind'] = pkg.get('kind', '')
+                yaml_info['description'] = pkg.get('description', '')
+            
+            # 提取 base 和 runtime
+            yaml_info['base'] = manifest.get('base', '')
+            yaml_info['runtime'] = manifest.get('runtime', '')
+            
+            # 提取 command
+            if 'command' in manifest:
+                cmd = manifest['command']
+                if isinstance(cmd, list) and len(cmd) > 0:
+                    yaml_info['command'] = cmd[0]
+                elif isinstance(cmd, str):
+                    yaml_info['command'] = cmd
+            
+            return yaml_info
+            
+        except Exception as e:
+            print(f"✗ Failed to extract yaml info: {e}")
+            return yaml_info
+    
+    def _generate_rebuild_yaml(
+        self,
+        origin_yaml: Path,
+        target_yaml: Path,
+        depends: Optional[List[str]] = None,
+        buildext_depends: Optional[List[str]] = None
+    ) -> bool:
+        """
+        生成重建用的 linglong.yaml
+        
+        Args:
+            origin_yaml: 原始 yaml 文件路径
+            target_yaml: 目标 yaml 文件路径
+            depends: 运行时依赖列表
+            buildext_depends: 构建时依赖列表
+            
+        Returns:
+            是否成功
+        """
+        import yaml
+        
+        # 提取原始 yaml 信息
+        yaml_info = self._extract_yaml_info(origin_yaml)
+        
+        # 选择模板（使用 skill 的 templates 目录）
+        script_dir = Path(__file__).parent.parent  # 从 scripts/dependency_fixer.py 向上两级到 skill 根目录
+        template_path = script_dir / "templates" / "linglong-rebuild.yaml"
+        if not yaml_info['runtime']:
+            template_path = script_dir / "templates" / "linglong-rebuild-WithoutRuntime.yaml"
+        
+        if not template_path.exists():
+            print(f"✗ Template not found: {template_path}")
+            return False
+        
+        try:
+            # 读取模板
+            with open(template_path, 'r', encoding='utf-8') as f:
+                template_content = f.read()
+            
+            # 替换变量
+            template_content = template_content.replace('${orig_yaml_version}', str(yaml_info['version']))
+            template_content = template_content.replace('${orig_yaml_id}', str(yaml_info['id']))
+            template_content = template_content.replace('${orig_yaml_name}', str(yaml_info['name']))
+            template_content = template_content.replace('${orig_yaml_description}', str(yaml_info['description']))
+            template_content = template_content.replace('${orig_yaml_base}', str(yaml_info['base']))
+            template_content = template_content.replace('${orig_yaml_runtime}', str(yaml_info['runtime']))
+            template_content = template_content.replace('${orig_yaml_command}', str(yaml_info['command']))
+            
+            # 写入目标文件（直接写入，不经过yaml解析，与pica-helper的envsubst方式相同）
+            target_yaml.parent.mkdir(parents=True, exist_ok=True)
+            with open(target_yaml, 'w', encoding='utf-8') as f:
+                f.write(template_content)
+            
+            # 添加 depends（如果提供）- 直接在文件末尾追加
+            if depends:
+                with open(target_yaml, 'a', encoding='utf-8') as f:
+                    f.write("\n")
+                    f.write("depends:\n")
+                    for dep in depends:
+                        f.write(f"  - \"{dep}\"\n")
+            
+            # 添加 buildext.apt.depends（如果提供）- 直接在文件末尾追加
+            if buildext_depends:
+                with open(target_yaml, 'a', encoding='utf-8') as f:
+                    f.write("\n")
+                    f.write("buildext:\n")
+                    f.write("  apt:\n")
+                    f.write("    depends:\n")
+                    for dep in buildext_depends:
+                        f.write(f"      - \"{dep}\"\n")
+            
+            print(f"✓ Generated rebuild yaml: {target_yaml}")
+            return True
+            
+        except Exception as e:
+            print(f"✗ Failed to generate rebuild yaml: {e}")
+            return False
+    
+    def ensure_fresh_files_dir(self, target_dir: Optional[Path] = None) -> bool:
+        """
+        确保使用最新的 files 目录（删除现有目录并重新解压）
+        
+        Args:
+            target_dir: 目标 files 目录
+            
+        Returns:
+            是否成功
+        """
+        # 设置目标目录
+        if target_dir is None:
+            target_dir = self.build_dir / "files"
+        else:
+            target_dir = Path(target_dir).resolve()
+        
+        # 删除现有的 files 目录
+        if target_dir.exists():
+            print(f"Removing existing files directory: {target_dir}")
+            shutil.rmtree(target_dir)
+        
+        # 从 files.tar.zst 重新解压
+        if self.files_tar.exists():
+            print(f"Extracting files.tar.zst to {target_dir}...")
+            return self._extract_files_tar(target_dir)
+        else:
+            print(f"✗ files.tar.zst not found: {self.files_tar}")
+            return False
+        
     def scan_non_std_dir_libraries(
         self,
         app_installed_files_dir: Optional[Path] = None
@@ -48,10 +212,9 @@ class DependencyFixer:
         else:
             app_installed_files_dir = Path(app_installed_files_dir).resolve()
         
-        # 检查 files.tar.zst 并解压
-        if not app_installed_files_dir.exists() and self.files_tar.exists():
-            print(f"Extracting files.tar.zst to {app_installed_files_dir}...")
-            self._extract_files_tar(app_installed_files_dir)
+        # 确保使用最新的 files 目录（删除现有目录并重新解压）
+        if not self.ensure_fresh_files_dir(app_installed_files_dir):
+            return False, []
         
         if not app_installed_files_dir.exists():
             print(f"✗ Files directory does not exist: {app_installed_files_dir}")
@@ -318,6 +481,11 @@ class DependencyFixer:
         """
         extracted_deps_dir = Path(extracted_deps_dir).resolve()
         target_files_dir = Path(target_files_dir).resolve()
+        
+        # 确保使用最新的 files 目录（删除现有目录并重新解压）
+        if not self.ensure_fresh_files_dir(target_files_dir):
+            return False, []
+        
         target_files_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"\nMerging dependencies to {target_files_dir}...")
