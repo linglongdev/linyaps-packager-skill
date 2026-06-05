@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-构建流程控制器 - 整合 compact-check、依赖分析和修复流程
+构建流程控制器 - 整合 compat-check、依赖分析和修复流程
 基于 linyaps-pica-helper 的完整构建流程
 """
 import os
@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
-from compact_checker import CompatChecker
+from compat_checker import CompatChecker
 from dependency_analyzer import DependencyAnalyzer
 from dependency_fixer import DependencyFixer
 
