@@ -99,6 +99,7 @@ class DebConverter:
         self.layer_export_status = "N/A"
         self.fix_attempts = 0
         self.max_fix_attempts = 3
+        self.fix_mode_used = None  # 记录使用的修复模式 (0/1/2)
         
         # 初始化子模块
         self.compat_checker = CompatChecker(
@@ -448,6 +449,8 @@ class DebConverter:
         """
         尝试依赖修复
         
+        每次修复尝试只尝试一个模式，按顺序：模式2 → 模式0 → 模式1
+        
         Returns:
             (成功状态, 状态描述)
         """
@@ -461,12 +464,22 @@ class DebConverter:
             print(f"\n✗ Exceeded maximum fix attempts ({self.max_fix_attempts})")
             return False, "Exceeded maximum fix attempts"
         
-        # 执行依赖分析和修复
-        fix_success, fix_msg = self._analyze_and_fix_dependencies()
+        # 根据尝试次数选择模式
+        # 第1次尝试：模式2（最轻量）
+        # 第2次尝试：模式0（中等）
+        # 第3次尝试：模式1（最重）
+        mode = (self.fix_attempts - 1) % 3
+        
+        # 执行依赖分析和修复（只尝试指定的模式）
+        fix_success, fix_msg = self._analyze_and_fix_dependencies(mode=mode)
         
         if not fix_success:
             print(f"\n✗ Dependency fix failed: {fix_msg}")
-            return self._attempt_final_build()
+            # 如果是最后一次尝试，执行最终构建
+            if self.fix_attempts >= self.max_fix_attempts:
+                return self._attempt_final_build()
+            # 否则，尝试下一个模式
+            return self._attempt_dependency_fix()
         
         # 执行重建（使用标准构建，因为已经添加了依赖）
         print("\n" + "=" * 60)
@@ -479,7 +492,11 @@ class DebConverter:
         if not rebuild_success:
             print(f"\n✗ Rebuild failed: {rebuild_msg}")
             print("# BUILD_END")
-            return self._attempt_final_build()
+            # 如果是最后一次尝试，执行最终构建
+            if self.fix_attempts >= self.max_fix_attempts:
+                return self._attempt_final_build()
+            # 否则，尝试下一个模式
+            return self._attempt_dependency_fix()
         
         print(f"\n✓ Rebuild successful")
         print("# BUILD_END")
@@ -509,7 +526,7 @@ class DebConverter:
     
     def _attempt_final_build(self) -> Tuple[bool, str]:
         """
-        执行最终构建（无输出检查）
+        执行最终构建（无输出检查）并导出 layer
         
         Returns:
             (成功状态, 状态描述)
@@ -523,21 +540,70 @@ class DebConverter:
         
         if build_success:
             print(f"\n✓ Final build successful")
+            
+            # 导出 layer 到 forceTested 目录
+            if self.enable_layer_export:
+                self._export_layer()
+                self._store_layer()
+            
             return True, "Final build successful (compat check bypassed)"
         else:
             print(f"\n✗ Final build failed: {build_msg}")
             return False, f"All fix attempts failed. Final error: {build_msg}"
     
-    def _analyze_and_fix_dependencies(self) -> Tuple[bool, str]:
+    def _analyze_and_fix_dependencies(self, mode: int = 2) -> Tuple[bool, str]:
         """
-        分析并修复依赖
+        分析并修复依赖（只尝试指定的模式）
+        
+        Args:
+            mode: 修复模式（0/1/2）
+                - 2: 扫描非标准目录中的库，创建软链接（最轻量）
+                - 0: 向 linglong.yaml 的 depends 字段追加运行时依赖（中等）
+                - 1: 下载并安装依赖包，更新 buildext.apt.depends（最重）
         
         Returns:
             (成功状态, 状态描述)
         """
         print("\nAnalyzing missing dependencies...")
         
-        # 分析缺失的依赖
+        # 模式2（最轻量）: 扫描非标准目录中的库，创建软链接
+        if mode == 2:
+            print("\n" + "-" * 60)
+            print("Mode 2: Scanning for libraries in non-standard directories (lightest)")
+            print("-" * 60)
+            self.fix_mode_used = 2
+            
+            # 扫描非标准目录中的库
+            scan_success, libraries = self.dependency_fixer.scan_non_std_dir_libraries()
+            
+            if not scan_success:
+                return False, "Failed to scan for libraries"
+            
+            if not libraries:
+                return False, "No libraries found in non-standard directories"
+            
+            print(f"\nFound {len(libraries)} libraries in non-standard directories")
+            
+            # 创建软链接
+            symlink_success, symlinks = self.dependency_fixer.create_symlinks_for_libraries(
+                libraries,
+                self.app_build_dir / "files",
+                self.app_build_dir / "files" / "lib"
+            )
+            
+            if not symlink_success:
+                return False, "Failed to create symlinks"
+            
+            # 更新 files.tar.zst
+            tar_update_success = self.dependency_fixer.create_files_tar()
+            
+            if not tar_update_success:
+                print("Warning: Failed to update files.tar.zst")
+            
+            print(f"✓ Mode 2 successful: Fixed {len(libraries)} libraries with symlinks")
+            return True, f"Fixed {len(libraries)} libraries (Mode 2: symlinks)"
+        
+        # 分析缺失的依赖（模式0和模式1都需要）
         analyze_success, packages = self.dependency_analyzer.analyze_missing_deps(
             force_update_cache=True
         )
@@ -546,78 +612,62 @@ class DebConverter:
             return False, "Dependency analysis failed"
         
         if not packages:
-            print("No missing packages found, trying alternative fix methods...")
-            # 尝试扫描非标准目录中的库
-            return self._fix_non_std_dir_libraries()
+            return False, "No missing packages found"
         
         print(f"\nFound {len(packages)} missing packages")
         
-        # 下载并安装依赖
-        download_success, extracted_dir = self.dependency_fixer.download_and_install_dependencies(packages)
+        # 模式0（中等）: 向 depends 字段追加运行时依赖
+        if mode == 0:
+            print("\n" + "-" * 60)
+            print("Mode 0: Adding runtime dependencies to linglong.yaml (medium)")
+            print("-" * 60)
+            self.fix_mode_used = 0
+            
+            yaml_update_success = self._update_yaml_with_runtime_depends(packages)
+            
+            if not yaml_update_success:
+                return False, "Failed to update linglong.yaml with runtime dependencies"
+            
+            print(f"✓ Mode 0 successful: Added {len(packages)} runtime dependencies")
+            return True, f"Fixed {len(packages)} dependencies (Mode 0: runtime depends)"
         
-        if not download_success:
-            return False, "Failed to download dependencies"
+        # 模式1（最重）: 下载并安装依赖包
+        if mode == 1:
+            print("\n" + "-" * 60)
+            print("Mode 1: Downloading and installing dependency packages (heaviest)")
+            print("-" * 60)
+            self.fix_mode_used = 1
+            
+            download_success, extracted_dir = self.dependency_fixer.download_and_install_dependencies(packages)
+            
+            if not download_success:
+                return False, "Failed to download dependencies"
+            
+            # 合并依赖到 files 目录
+            merge_success, added_files = self.dependency_fixer.merge_dependencies_to_files(
+                extracted_dir,
+                self.app_build_dir / "files"
+            )
+            
+            if not merge_success:
+                return False, "Failed to merge dependencies"
+            
+            # 更新 linglong.yaml（buildext.apt.depends）
+            yaml_update_success = self._update_yaml_with_dependencies(packages)
+            
+            if not yaml_update_success:
+                print("Warning: Failed to update linglong.yaml with dependencies")
+            
+            # 更新 files.tar.zst
+            tar_update_success = self.dependency_fixer.create_files_tar()
+            
+            if not tar_update_success:
+                print("Warning: Failed to update files.tar.zst")
+            
+            print(f"✓ Mode 1 successful: Fixed {len(packages)} dependencies")
+            return True, f"Fixed {len(packages)} dependencies (Mode 1: buildext.apt.depends)"
         
-        # 合并依赖到 files 目录
-        merge_success, added_files = self.dependency_fixer.merge_dependencies_to_files(
-            extracted_dir,
-            self.app_build_dir / "files"
-        )
-        
-        if not merge_success:
-            return False, "Failed to merge dependencies"
-        
-        # 更新 linglong.yaml
-        yaml_update_success = self._update_yaml_with_dependencies(packages)
-        
-        if not yaml_update_success:
-            print("Warning: Failed to update linglong.yaml with dependencies")
-        
-        # 更新 files.tar.zst
-        tar_update_success = self.dependency_fixer.create_files_tar()
-        
-        if not tar_update_success:
-            print("Warning: Failed to update files.tar.zst")
-        
-        return True, f"Fixed {len(packages)} dependencies"
-    
-    def _fix_non_std_dir_libraries(self) -> Tuple[bool, str]:
-        """
-        修复非标准目录中的库
-        
-        Returns:
-            (成功状态, 状态描述)
-        """
-        print("\nScanning for libraries in non-standard directories...")
-        
-        # 扫描非标准目录中的库
-        scan_success, libraries = self.dependency_fixer.scan_non_std_dir_libraries()
-        
-        if not scan_success:
-            return False, "Failed to scan for libraries"
-        
-        if not libraries:
-            return False, "No libraries found in non-standard directories"
-        
-        print(f"\nFound {len(libraries)} libraries in non-standard directories")
-        
-        # 创建软链接
-        symlink_success, symlinks = self.dependency_fixer.create_symlinks_for_libraries(
-            libraries,
-            self.app_build_dir / "files",
-            self.app_build_dir / "files" / "lib"
-        )
-        
-        if not symlink_success:
-            return False, "Failed to create symlinks"
-        
-        # 更新 files.tar.zst
-        tar_update_success = self.dependency_fixer.create_files_tar()
-        
-        if not tar_update_success:
-            print("Warning: Failed to update files.tar.zst")
-        
-        return True, f"Fixed {len(libraries)} libraries with symlinks"
+        return False, f"Unknown mode: {mode}"
     
     def _update_yaml_with_dependencies(self, packages: List[str]) -> bool:
         """
@@ -661,6 +711,50 @@ class DebConverter:
                 yaml.dump(manifest, f, default_flow_style=False, allow_unicode=True)
             
             print(f"✓ Updated linglong.yaml with {len(packages)} dependencies")
+            return True
+        except ImportError:
+            print("✗ PyYAML not installed. Install with: pip install pyyaml")
+            return False
+        except Exception as e:
+            print(f"✗ Failed to update linglong.yaml: {e}")
+            return False
+    
+    def _update_yaml_with_runtime_depends(self, packages: List[str]) -> bool:
+        """
+        更新 linglong.yaml 中的运行时依赖（depends 字段）
+        
+        Args:
+            packages: 包列表
+            
+        Returns:
+            是否成功
+        """
+        yaml_path = self.app_build_dir / "linglong.yaml"
+        
+        if not yaml_path.exists():
+            print(f"✗ linglong.yaml not found: {yaml_path}")
+            return False
+        
+        try:
+            import yaml
+            
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                manifest = yaml.safe_load(f)
+            
+            # 合并现有的 depends
+            existing_depends = manifest.get("depends", [])
+            if isinstance(existing_depends, str):
+                existing_depends = [existing_depends]
+            
+            # 去重并添加新依赖
+            all_depends = list(set(existing_depends + packages))
+            manifest["depends"] = all_depends
+            
+            # 写回文件
+            with open(yaml_path, "w", encoding="utf-8") as f:
+                yaml.dump(manifest, f, default_flow_style=False, allow_unicode=True)
+            
+            print(f"✓ Updated linglong.yaml with {len(packages)} runtime dependencies")
             return True
         except ImportError:
             print("✗ PyYAML not installed. Install with: pip install pyyaml")
@@ -736,8 +830,8 @@ class DebConverter:
             print("Layer export failed, skipping layer storage")
             return False
         
-        # 查找 layer 文件
-        layer_files = list(self.app_build_dir.glob("*_binary.layer"))
+        # 查找 layer 文件（递归查找，因为 ll-builder export 可能将文件放在子目录中）
+        layer_files = list(self.app_build_dir.rglob("*_binary.layer"))
         if not layer_files:
             print("✗ Layer file not found")
             return False
@@ -836,6 +930,13 @@ class DebConverter:
         print(f"Compat Check Status: {self.compact_check_status}")
         if self.fix_attempts > 0:
             print(f"Fix Attempts: {self.fix_attempts}")
+            if self.fix_mode_used is not None:
+                mode_names = {
+                    0: "Mode 0 (runtime depends)",
+                    1: "Mode 1 (buildext.apt.depends)",
+                    2: "Mode 2 (symlinks)"
+                }
+                print(f"Fix Mode Used: {mode_names.get(self.fix_mode_used, 'Unknown')}")
         print(f"Layer Export Status: {self.layer_export_status}")
         
         return True, "Conversion completed successfully"
